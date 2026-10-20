@@ -1,4 +1,4 @@
-require('dotenv').config();
+require('dotenv').config({ quiet: true });
 
 const {
   Client,
@@ -9,12 +9,31 @@ const {
 } = require('discord.js');
 const Stripe = require('stripe');
 
-const { DISCORD_TOKEN, STRIPE_SECRET_KEY, GUILD_ID } = process.env;
-const SUCCESS_URL = process.env.SUCCESS_URL || 'https://discord.com/channels/@me';
-const CANCEL_URL = process.env.CANCEL_URL || 'https://discord.com/channels/@me';
+/** Read the first non-empty env var from `names`, stripping whitespace and wrapping quotes. */
+function env(...names) {
+  for (const name of names) {
+    const value = process.env[name]?.trim().replace(/^(['"])(.*)\1$/, '$2').trim();
+    if (value) return value;
+  }
+  return undefined;
+}
 
-if (!DISCORD_TOKEN || !STRIPE_SECRET_KEY) {
-  console.error('Missing DISCORD_TOKEN or STRIPE_SECRET_KEY in environment (.env).');
+const DISCORD_TOKEN = env('DISCORD_TOKEN', 'BOT_TOKEN', 'TOKEN');
+const STRIPE_SECRET_KEY = env('STRIPE_SECRET_KEY', 'STRIPE_KEY', 'STRIPE_API_KEY');
+const GUILD_ID = env('GUILD_ID');
+const SUCCESS_URL = env('SUCCESS_URL') || 'https://discord.com/channels/@me';
+const CANCEL_URL = env('CANCEL_URL') || 'https://discord.com/channels/@me';
+
+const missing = [
+  !DISCORD_TOKEN && 'DISCORD_TOKEN',
+  !STRIPE_SECRET_KEY && 'STRIPE_SECRET_KEY',
+].filter(Boolean);
+if (missing.length) {
+  console.error(
+    `Missing environment variable(s): ${missing.join(', ')}.\n` +
+      'On Railway: open your service -> Variables -> New Variable, add them, then redeploy.\n' +
+      'Locally: put them in a .env file (see .env.example).',
+  );
   process.exit(1);
 }
 

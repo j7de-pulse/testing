@@ -16,3 +16,9 @@ Pressing **Confirm** checks the Checkout Session with Stripe; only if Stripe rep
 3. In the Discord Developer Portal, enable the **Message Content** intent (needed for `-usd`).
 4. Invite the bot with the `bot` and `applications.commands` scopes.
 5. `npm start`
+
+## Deploying on Railway
+Railway does not use a `.env` file. Set the variables on the service instead:
+1. Open the service -> **Variables** -> **New Variable**.
+2. Add `DISCORD_TOKEN` and `STRIPE_SECRET_KEY` (no quotes needed). Optionally `GUILD_ID`.
+3. Redeploy. The start command (`npm start`) is set in `railway.json`.
