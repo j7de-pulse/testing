@@ -1,0 +1,18 @@
+# Stripe Payment Bot
+
+Discord bot that generates a Stripe Checkout link and lets the payer confirm it.
+
+## Commands (anyone can use them)
+- `-usd <amount>` – e.g. `-usd 25`
+- `/usd amount:<amount>` – e.g. `/usd 19.99`
+
+The bot posts a "Payment Generated" card with a **Pay** link and a **Confirm** button.
+Pressing **Confirm** checks the Checkout Session with Stripe; only if Stripe reports it as
+`paid` does the card change to "Payment Confirmed". Otherwise the user gets a private notice.
+
+## Setup
+1. `npm install`
+2. Copy `.env.example` to `.env` and fill in `DISCORD_TOKEN` and `STRIPE_SECRET_KEY`.
+3. In the Discord Developer Portal, enable the **Message Content** intent (needed for `-usd`).
+4. Invite the bot with the `bot` and `applications.commands` scopes.
+5. `npm start`

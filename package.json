@@ -1,0 +1,15 @@
+{
+  "name": "stripe-payment-bot",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Discord bot that generates Stripe checkout links with -usd / /usd and confirms payment",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js"
+  },
+  "dependencies": {
+    "discord.js": "^14.27.0",
+    "dotenv": "^17.4.2",
+    "stripe": "^23.0.0"
+  }
+}
