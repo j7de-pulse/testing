@@ -222,7 +222,12 @@ client.once('clientReady', async () => {
   }
 });
 
-const INVALID_AMOUNT = `Please give a valid amount between ${formatUsd(MIN_CENTS)} and ${formatUsd(MAX_CENTS)}, e.g. \`25\` or \`19.99\`.`;
+const invalidAmountMessage = (command) =>
+  noticeMessage(
+    'Invalid Amount',
+    `Use the command \`${command} <amount>\`. Please do a valid integer such as \`1\` or \`100\`.`,
+    0xed4245,
+  );
 
 // -usd <amount>
 client.on('messageCreate', async (message) => {
@@ -232,7 +237,7 @@ client.on('messageCreate', async (message) => {
 
   const cents = parseAmountToCents(rawAmount);
   if (cents === null) {
-    await message.reply({ content: `Usage: \`${PREFIX} <amount>\`. ${INVALID_AMOUNT}` });
+    await message.reply(invalidAmountMessage(PREFIX));
     return;
   }
 
@@ -250,7 +255,8 @@ client.on('interactionCreate', async (interaction) => {
   if (interaction.isChatInputCommand() && interaction.commandName === 'usd') {
     const cents = parseAmountToCents(interaction.options.getString('amount', true));
     if (cents === null) {
-      await interaction.reply({ content: INVALID_AMOUNT, flags: MessageFlags.Ephemeral });
+      const reply = invalidAmountMessage('/usd');
+      await interaction.reply({ ...reply, flags: reply.flags | MessageFlags.Ephemeral });
       return;
     }
     await interaction.deferReply();
