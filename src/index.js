@@ -111,7 +111,7 @@ function paymentMessage(cents, session) {
               `# Payment Generated - ${amount}\n` +
               `Here is the payment of **${amount}**, you can use the link below to pay online. ` +
               'Payments are done through Stripe, accepting google pay, card, apple pay and many more ' +
-              'options including Cash App Pay. \n' +
+              "options including Cash App Pay. Can't use Stripe? Wait for an executive to assist you.\n" +
               '-# Tax is not applied onto this payment yet, GST may be applied at checkout.',
           },
           { type: C.SEPARATOR },
