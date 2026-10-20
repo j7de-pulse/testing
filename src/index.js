@@ -176,6 +176,20 @@ function confirmedMessage(session, confirmer) {
   };
 }
 
+/** Small Components V2 container used for the private replies to the Confirm button. */
+function noticeMessage(title, body, accentColor) {
+  return {
+    flags: MessageFlags.IsComponentsV2,
+    components: [
+      {
+        type: C.CONTAINER,
+        accent_color: accentColor,
+        components: [{ type: C.TEXT, content: `### ${title}\n${body}` }],
+      },
+    ],
+  };
+}
+
 const usdCommand = new SlashCommandBuilder()
   .setName('usd')
   .setDescription('Generate a Stripe payment link in USD')
@@ -260,18 +274,26 @@ client.on('interactionCreate', async (interaction) => {
       session = await stripe.checkout.sessions.retrieve(sessionId);
     } catch (err) {
       console.error('Stripe session lookup failed:', err);
-      await interaction.editReply('Could not check this payment with Stripe. Please try again.');
+      await interaction.editReply(
+        noticeMessage('Something went wrong', 'Could not check this payment with Stripe. Please try again.', 0xed4245),
+      );
       return;
     }
 
     if (session.payment_status === 'paid') {
       await interaction.message.edit(confirmedMessage(session, interaction.user));
-      await interaction.editReply('Payment confirmed. Thank you!');
+      await interaction.editReply(noticeMessage('Payment Confirmed', 'Thank you! Your payment has been received.', 0x57f287));
     } else if (session.status === 'expired') {
-      await interaction.editReply('This payment link has expired. Please ask for a new one.');
+      await interaction.editReply(
+        noticeMessage('Payment Link Expired', 'This payment link has expired. Please ask for a new one.', 0xed4245),
+      );
     } else {
       await interaction.editReply(
-        "This payment hasn't been completed yet. Pay using the button, then press Confirm again.",
+        noticeMessage(
+          'Payment Not Completed',
+          "This payment hasn't been completed yet. Pay using the button, then press Confirm again.",
+          0xfee75c,
+        ),
       );
     }
   }
