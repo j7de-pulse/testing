@@ -5,6 +5,7 @@ Discord bot that generates a Stripe Checkout link and lets the payer confirm it.
 ## Commands (anyone can use them)
 - `-usd <amount>` – e.g. `-usd 25`
 - `/usd amount:<amount>` – e.g. `/usd 19.99`
+- `-convert <amount>` – converts USD to Robux at 1,000 R$ = $7, e.g. `-convert 300` → 42,857R$
 
 The bot posts a "Payment Generated" card with a **Pay** link and a **Confirm** button.
 Pressing **Confirm** checks the Checkout Session with Stripe; only if Stripe reports it as

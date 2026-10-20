@@ -40,6 +40,8 @@ if (missing.length) {
 const stripe = new Stripe(STRIPE_SECRET_KEY);
 
 const PREFIX = '-usd';
+const CONVERT_PREFIX = '-convert';
+const ROBUX_PER_7_DOLLARS = 1000; // 1,000 R$ = $7.00
 const CONFIRM_PREFIX = 'pay_confirm:';
 const MIN_CENTS = 50; // Stripe's minimum charge for USD
 const MAX_CENTS = 99_999_999; // Stripe's maximum charge for USD
@@ -55,13 +57,13 @@ const C = {
 const BUTTON_STYLE = { SUCCESS: 3, LINK: 5 };
 
 /** Parse "25", "$25", "25.5", "1,000.99" into integer cents, or null if invalid. */
-function parseAmountToCents(input) {
+function parseAmountToCents(input, min = MIN_CENTS, max = MAX_CENTS) {
   if (!input) return null;
   const cleaned = String(input).trim().replace(/^\$/, '').replace(/,/g, '');
   if (!/^\d+(\.\d{1,2})?$/.test(cleaned)) return null;
   const [whole, frac = ''] = cleaned.split('.');
   const cents = Number(whole) * 100 + Number(frac.padEnd(2, '0'));
-  if (!Number.isSafeInteger(cents) || cents < MIN_CENTS || cents > MAX_CENTS) return null;
+  if (!Number.isSafeInteger(cents) || cents < min || cents > max) return null;
   return cents;
 }
 
@@ -175,17 +177,18 @@ function confirmedMessage(session, confirmer) {
   };
 }
 
-/** Small Components V2 container used for the private replies to the Confirm button. */
-function noticeMessage(title, body) {
+/** Components V2 container holding a single block of text. */
+function textMessage(content) {
   return {
     flags: MessageFlags.IsComponentsV2,
-    components: [
-      {
-        type: C.CONTAINER,
-        components: [{ type: C.TEXT, content: `### ${title}\n${body}` }],
-      },
-    ],
+    allowedMentions: { parse: [] },
+    components: [{ type: C.CONTAINER, components: [{ type: C.TEXT, content }] }],
   };
+}
+
+/** Small Components V2 container used for the private replies to the Confirm button. */
+function noticeMessage(title, body) {
+  return textMessage(`### ${title}\n${body}`);
 }
 
 const usdCommand = new SlashCommandBuilder()
@@ -226,11 +229,26 @@ const invalidAmountMessage = (command) =>
     `Use the command \`${command} <amount>\`. Please do a valid integer such as \`1\` or \`100\`.`,
   );
 
-// -usd <amount>
+// -usd <amount>, -convert <amount>
 client.on('messageCreate', async (message) => {
   if (message.author.bot) return;
-  const [cmd, rawAmount] = message.content.trim().split(/\s+/);
-  if (cmd?.toLowerCase() !== PREFIX) return;
+  const [rawCmd, rawAmount] = message.content.trim().split(/\s+/);
+  const cmd = rawCmd?.toLowerCase();
+
+  if (cmd === CONVERT_PREFIX) {
+    const cents = parseAmountToCents(rawAmount, 1, MAX_CENTS);
+    if (cents === null) {
+      await message.reply(invalidAmountMessage(CONVERT_PREFIX));
+      return;
+    }
+    const robux = Math.floor((cents * ROBUX_PER_7_DOLLARS) / 700);
+    await message.channel.send(
+      textMessage(`${formatUsd(cents)} USD converts into **${robux.toLocaleString('en-US')}R$**.`),
+    );
+    return;
+  }
+
+  if (cmd !== PREFIX) return;
 
   const cents = parseAmountToCents(rawAmount);
   if (cents === null) {
