@@ -147,7 +147,6 @@ function confirmedMessage(session, confirmer) {
     components: [
       {
         type: C.CONTAINER,
-        accent_color: 0x57f287,
         components: [
           {
             type: C.TEXT,
@@ -177,13 +176,12 @@ function confirmedMessage(session, confirmer) {
 }
 
 /** Small Components V2 container used for the private replies to the Confirm button. */
-function noticeMessage(title, body, accentColor) {
+function noticeMessage(title, body) {
   return {
     flags: MessageFlags.IsComponentsV2,
     components: [
       {
         type: C.CONTAINER,
-        accent_color: accentColor,
         components: [{ type: C.TEXT, content: `### ${title}\n${body}` }],
       },
     ],
@@ -226,7 +224,6 @@ const invalidAmountMessage = (command) =>
   noticeMessage(
     'Invalid Amount',
     `Use the command \`${command} <amount>\`. Please do a valid integer such as \`1\` or \`100\`.`,
-    0xed4245,
   );
 
 // -usd <amount>
@@ -281,24 +278,23 @@ client.on('interactionCreate', async (interaction) => {
     } catch (err) {
       console.error('Stripe session lookup failed:', err);
       await interaction.editReply(
-        noticeMessage('Something went wrong', 'Could not check this payment with Stripe. Please try again.', 0xed4245),
+        noticeMessage('Something went wrong', 'Could not check this payment with Stripe. Please try again.'),
       );
       return;
     }
 
     if (session.payment_status === 'paid') {
       await interaction.message.edit(confirmedMessage(session, interaction.user));
-      await interaction.editReply(noticeMessage('Payment Confirmed', 'Thank you! Your payment has been received.', 0x57f287));
+      await interaction.editReply(noticeMessage('Payment Confirmed', 'Thank you! Your payment has been received.'));
     } else if (session.status === 'expired') {
       await interaction.editReply(
-        noticeMessage('Payment Link Expired', 'This payment link has expired. Please ask for a new one.', 0xed4245),
+        noticeMessage('Payment Link Expired', 'This payment link has expired. Please ask for a new one.'),
       );
     } else {
       await interaction.editReply(
         noticeMessage(
           'Payment Not Completed',
           "This payment hasn't been completed yet. Pay using the button, then press Confirm again.",
-          0xfee75c,
         ),
       );
     }
