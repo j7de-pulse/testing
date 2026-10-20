@@ -48,7 +48,6 @@ const MAX_CENTS = 99_999_999; // Stripe's maximum charge for USD
 const C = {
   ACTION_ROW: 1,
   BUTTON: 2,
-  SECTION: 9,
   TEXT: 10,
   SEPARATOR: 14,
   CONTAINER: 17,
@@ -107,24 +106,13 @@ function paymentMessage(cents, session) {
         type: C.CONTAINER,
         components: [
           {
-            type: C.SECTION,
-            components: [
-              {
-                type: C.TEXT,
-                content:
-                  `# Payment Generated - ${amount}\n` +
-                  `Here is the payment of **${amount}**, you can use the link below to pay online. ` +
-                  'Payments are done through Stripe, accepting google pay, card, apple pay and many more ' +
-                  'options including Cash App Pay. \n' +
-                  '-# Tax is not applied onto this payment yet, GST may be applied at checkout.',
-              },
-            ],
-            accessory: {
-              type: C.BUTTON,
-              style: BUTTON_STYLE.LINK,
-              label: 'Stripe Checkout',
-              url: session.url,
-            },
+            type: C.TEXT,
+            content:
+              `# Payment Generated - ${amount}\n` +
+              `Here is the payment of **${amount}**, you can use the link below to pay online. ` +
+              'Payments are done through Stripe, accepting google pay, card, apple pay and many more ' +
+              'options including Cash App Pay. \n' +
+              '-# Tax is not applied onto this payment yet, GST may be applied at checkout.',
           },
           { type: C.SEPARATOR },
           {
