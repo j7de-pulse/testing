@@ -6,6 +6,7 @@ Discord bot that generates a Stripe Checkout link and lets the payer confirm it.
 - `-usd <amount>` – e.g. `-usd 25`
 - `/usd amount:<amount>` – e.g. `/usd 19.99`
 - `-convert <amount>` – converts USD to Robux at 1,000 R$ = $7, e.g. `-convert 300` → 42,857R$
+- `-vault <stock>` – owner only (`OWNER_ID`), posts the Robux Vault panel, e.g. `-vault 24`
 
 The bot posts a "Payment Generated" card with a **Pay** link and a **Confirm** button.
 Pressing **Confirm** checks the Checkout Session with Stripe; only if Stripe reports it as
@@ -21,5 +22,5 @@ Pressing **Confirm** checks the Checkout Session with Stripe; only if Stripe rep
 ## Deploying on Railway
 Railway does not use a `.env` file. Set the variables on the service instead:
 1. Open the service -> **Variables** -> **New Variable**.
-2. Add `DISCORD_TOKEN` and `STRIPE_SECRET_KEY` (no quotes needed). Optionally `GUILD_ID`.
+2. Add `DISCORD_TOKEN`, `STRIPE_SECRET_KEY` and `OWNER_ID` (no quotes needed). Optionally `GUILD_ID`.
 3. Redeploy. The start command (`npm start`) is set in `railway.json`.

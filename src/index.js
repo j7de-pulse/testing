@@ -21,6 +21,8 @@ function env(...names) {
 const DISCORD_TOKEN = env('DISCORD_TOKEN', 'BOT_TOKEN', 'TOKEN');
 const STRIPE_SECRET_KEY = env('STRIPE_SECRET_KEY', 'STRIPE_KEY', 'STRIPE_API_KEY');
 const GUILD_ID = env('GUILD_ID');
+// Discord user IDs allowed to use owner-only commands like -vault (comma-separated)
+const OWNER_IDS = (env('OWNER_ID', 'OWNER_IDS') || '').split(',').map((id) => id.trim()).filter(Boolean);
 const SUCCESS_URL = env('SUCCESS_URL') || 'https://discord.com/channels/@me';
 const CANCEL_URL = env('CANCEL_URL') || 'https://discord.com/channels/@me';
 
@@ -36,11 +38,13 @@ if (missing.length) {
   );
   process.exit(1);
 }
+if (!OWNER_IDS.length) console.warn('OWNER_ID is not set, so nobody can use -vault.');
 
 const stripe = new Stripe(STRIPE_SECRET_KEY);
 
 const PREFIX = '-usd';
 const CONVERT_PREFIX = '-convert';
+const VAULT_PREFIX = '-vault';
 const ROBUX_PER_7_DOLLARS = 1000; // 1,000 R$ = $7.00
 const CONFIRM_PREFIX = 'pay_confirm:';
 const MIN_CENTS = 50; // Stripe's minimum charge for USD
@@ -54,7 +58,7 @@ const C = {
   SEPARATOR: 14,
   CONTAINER: 17,
 };
-const BUTTON_STYLE = { SUCCESS: 3, LINK: 5 };
+const BUTTON_STYLE = { SECONDARY: 2, SUCCESS: 3, LINK: 5 };
 
 /** Parse "25", "$25", "25.5", "1,000.99" into integer cents, or null if invalid. */
 function parseAmountToCents(input, min = MIN_CENTS, max = MAX_CENTS) {
@@ -186,6 +190,52 @@ function textMessage(content) {
   };
 }
 
+/** The Robux Vault panel posted by -vault. */
+function vaultMessage(stock) {
+  const robux = `${stock.toLocaleString('en-US')}R$`;
+  return {
+    flags: MessageFlags.IsComponentsV2,
+    allowedMentions: { parse: [] },
+    components: [
+      {
+        type: C.CONTAINER,
+        components: [
+          {
+            type: C.TEXT,
+            content:
+              '# Robux Vault\n' +
+              'Below is all information regarding the **Roblox Vault**, please read all information carefully ' +
+              "before you make a decision. All robux is paid via group or Roblox Transfer, you'll receive your " +
+              'robux no matter the current circumstances the only delay issue would be pending robux or max ' +
+              "transfer limit if you didn't want to wait. If you'd like it via gamepass tax will not be applied.\n\n" +
+              `- **Current Stock**: ${robux}\n` +
+              '- **Payment Types**: Stripe (card, cashapp pay etc).',
+          },
+          { type: C.SEPARATOR, spacing: 1, divider: false },
+          {
+            type: C.ACTION_ROW,
+            components: [
+              {
+                type: C.BUTTON,
+                style: BUTTON_STYLE.SUCCESS,
+                label: 'Purchase',
+                custom_id: 'vault_purchase',
+              },
+              {
+                type: C.BUTTON,
+                style: BUTTON_STYLE.SECONDARY,
+                label: `Stock: ${robux}`,
+                custom_id: 'vault_stock',
+                disabled: true,
+              },
+            ],
+          },
+        ],
+      },
+    ],
+  };
+}
+
 /** Small Components V2 container used for the private replies to the Confirm button. */
 function noticeMessage(title, body) {
   return textMessage(`### ${title}\n${body}`);
@@ -229,11 +279,24 @@ const invalidAmountMessage = (command) =>
     `Use the command \`${command} <amount>\`. Please do a valid integer such as \`1\` or \`100\`.`,
   );
 
-// -usd <amount>, -convert <amount>
+// -usd <amount>, -convert <amount>, -vault <stock>
 client.on('messageCreate', async (message) => {
   if (message.author.bot) return;
   const [rawCmd, rawAmount] = message.content.trim().split(/\s+/);
   const cmd = rawCmd?.toLowerCase();
+
+  if (cmd === VAULT_PREFIX) {
+    if (!OWNER_IDS.includes(message.author.id)) return;
+    const cleaned = (rawAmount || '').replace(/,/g, '').replace(/r\$$/i, '');
+    if (!/^\d+$/.test(cleaned) || !Number.isSafeInteger(Number(cleaned))) {
+      await message.reply(
+        noticeMessage('Invalid Stock', `Use the command \`${VAULT_PREFIX} <stock>\`. Please do a valid integer such as \`24\` or \`1000\`.`),
+      );
+      return;
+    }
+    await message.channel.send(vaultMessage(Number(cleaned)));
+    return;
+  }
 
   if (cmd === CONVERT_PREFIX) {
     const cents = parseAmountToCents(rawAmount, 1, MAX_CENTS);
