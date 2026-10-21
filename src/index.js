@@ -45,6 +45,8 @@ const stripe = new Stripe(STRIPE_SECRET_KEY);
 const PREFIX = '-usd';
 const CONVERT_PREFIX = '-convert';
 const VAULT_PREFIX = '-vault';
+const VAULT_PURCHASE_PREFIX = 'vault_purchase';
+const VAULT_MODAL_PREFIX = 'vault_modal';
 const ROBUX_PER_7_DOLLARS = 1000; // 1,000 R$ = $7.00
 const CONFIRM_PREFIX = 'pay_confirm:';
 const MIN_CENTS = 50; // Stripe's minimum charge for USD
@@ -78,7 +80,22 @@ function formatUsd(cents) {
   })}`;
 }
 
-async function createCheckout(cents, requester) {
+const formatRobux = (robux) => `${robux.toLocaleString('en-US')}R$`;
+
+/** Price of a Robux amount in cents at 1,000 R$ = $7.00. */
+const robuxToCents = (robux) => (robux * 700) / ROBUX_PER_7_DOLLARS;
+
+/** Parse a vault purchase amount: a whole number in steps of 100 (1000, 2200 - not 2025), or null. */
+function parseRobuxAmount(input) {
+  const cleaned = String(input ?? '').trim().replace(/,/g, '').replace(/r\$$/i, '');
+  if (!/^\d+$/.test(cleaned)) return null;
+  const robux = Number(cleaned);
+  if (!Number.isSafeInteger(robux) || robux < 100 || robux % 100 !== 0) return null;
+  if (robuxToCents(robux) > MAX_CENTS) return null;
+  return robux;
+}
+
+async function createCheckout(cents, requester, { name = `Payment - ${formatUsd(cents)}`, metadata = {} } = {}) {
   return stripe.checkout.sessions.create({
     mode: 'payment',
     line_items: [
@@ -87,7 +104,7 @@ async function createCheckout(cents, requester) {
         price_data: {
           currency: 'usd',
           unit_amount: cents,
-          product_data: { name: `Payment - ${formatUsd(cents)}` },
+          product_data: { name },
         },
       },
     ],
@@ -98,6 +115,7 @@ async function createCheckout(cents, requester) {
     metadata: {
       discord_user_id: requester.id,
       discord_username: requester.username,
+      ...metadata,
     },
   });
 }
@@ -145,6 +163,7 @@ function paymentMessage(cents, session) {
 }
 
 function confirmedMessage(session, confirmer) {
+  const robux = session.metadata?.robux ? ` (${formatRobux(Number(session.metadata.robux))})` : '';
   const amount = formatUsd(session.amount_total);
   const paidAt = `<t:${Math.floor(Date.now() / 1000)}:f>`;
   return {
@@ -158,7 +177,7 @@ function confirmedMessage(session, confirmer) {
             type: C.TEXT,
             content:
               `# Payment Confirmed - ${amount}\n` +
-              `The payment of **${amount}** has been received through Stripe.\n` +
+              `The payment of **${amount}**${robux} has been received through Stripe.\n` +
               `Confirmed by <@${confirmer.id}> on ${paidAt}.\n` +
               `-# Reference: \`${session.id.slice(-12)}\``,
           },
@@ -192,7 +211,7 @@ function textMessage(content) {
 
 /** The Robux Vault panel posted by -vault. */
 function vaultMessage(stock) {
-  const robux = `${stock.toLocaleString('en-US')}R$`;
+  const robux = formatRobux(stock);
   return {
     flags: MessageFlags.IsComponentsV2,
     allowedMentions: { parse: [] },
@@ -219,7 +238,7 @@ function vaultMessage(stock) {
                 type: C.BUTTON,
                 style: BUTTON_STYLE.SUCCESS,
                 label: 'Purchase',
-                custom_id: 'vault_purchase',
+                custom_id: `${VAULT_PURCHASE_PREFIX}:${stock}`,
               },
               {
                 type: C.BUTTON,
@@ -227,6 +246,71 @@ function vaultMessage(stock) {
                 label: `Stock: ${robux}`,
                 custom_id: 'vault_stock',
                 disabled: true,
+              },
+            ],
+          },
+        ],
+      },
+    ],
+  };
+}
+
+/** Modal shown when someone presses Purchase on the vault panel. */
+function vaultPurchaseModal(stock) {
+  return {
+    custom_id: `${VAULT_MODAL_PREFIX}:${stock ?? ''}`,
+    title: 'Purchase Robux',
+    components: [
+      {
+        type: C.ACTION_ROW,
+        components: [
+          {
+            type: 4, // text input
+            custom_id: 'robux',
+            label: 'How much Robux? (steps of 100)',
+            style: 1, // short
+            placeholder: 'e.g. 1000 or 2200',
+            min_length: 3,
+            max_length: 12,
+            required: true,
+          },
+        ],
+      },
+    ],
+  };
+}
+
+/** Private payment pop-up for a vault purchase. */
+function vaultPaymentMessage(robux, cents, session) {
+  return {
+    flags: MessageFlags.IsComponentsV2,
+    allowedMentions: { parse: [] },
+    components: [
+      {
+        type: C.CONTAINER,
+        components: [
+          {
+            type: C.TEXT,
+            content:
+              '# Payment\n' +
+              `You've decided you want **${formatRobux(robux)}**, here is all the information.\n` +
+              `- **Amount:** ${formatUsd(cents)} USD (${formatRobux(robux)})\n`,
+          },
+          { type: C.SEPARATOR, divider: false },
+          {
+            type: C.ACTION_ROW,
+            components: [
+              {
+                type: C.BUTTON,
+                style: BUTTON_STYLE.SUCCESS,
+                label: 'Confirm Payment',
+                custom_id: `${CONFIRM_PREFIX}${session.id}`,
+              },
+              {
+                type: C.BUTTON,
+                style: BUTTON_STYLE.LINK,
+                label: 'Purchase',
+                url: session.url,
               },
             ],
           },
@@ -348,35 +432,83 @@ client.on('interactionCreate', async (interaction) => {
     return;
   }
 
-  // Confirm button: verify with Stripe that the checkout session was actually paid
+  // Vault Purchase button: ask how much Robux they want
+  if (interaction.isButton() && interaction.customId.split(':')[0] === VAULT_PURCHASE_PREFIX) {
+    const stock = interaction.customId.split(':')[1];
+    await interaction.showModal(vaultPurchaseModal(stock));
+    return;
+  }
+
+  // Vault purchase modal: validate the amount and send a private payment pop-up
+  if (interaction.isModalSubmit() && interaction.customId.split(':')[0] === VAULT_MODAL_PREFIX) {
+    const ephemeralNotice = (title, body) => {
+      const reply = noticeMessage(title, body);
+      return { ...reply, flags: reply.flags | MessageFlags.Ephemeral };
+    };
+    const robux = parseRobuxAmount(interaction.fields.getTextInputValue('robux'));
+    if (robux === null) {
+      await interaction.reply(
+        ephemeralNotice(
+          'Invalid Amount',
+          'Please enter a whole number in steps of 100, such as `1000` or `2200` (not `2025`).',
+        ),
+      );
+      return;
+    }
+    const stock = Number(interaction.customId.split(':')[1]);
+    if (interaction.customId.split(':')[1] && robux > stock) {
+      await interaction.reply(
+        ephemeralNotice('Not Enough Stock', `There is only **${formatRobux(stock)}** in stock right now.`),
+      );
+      return;
+    }
+
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    const cents = robuxToCents(robux);
+    try {
+      const session = await createCheckout(cents, interaction.user, {
+        name: `${formatRobux(robux)} - Robux Vault`,
+        metadata: { robux: String(robux) },
+      });
+      await interaction.editReply(vaultPaymentMessage(robux, cents, session));
+    } catch (err) {
+      console.error('Stripe checkout creation failed:', err);
+      await interaction.editReply(
+        noticeMessage('Something went wrong', 'Could not create the payment link. Please try again later.'),
+      );
+    }
+    return;
+  }
+
+  // Confirm button: verify with Stripe that the checkout session was actually paid.
+  // deferUpdate + editReply edits the message the button is on, which also works when
+  // that message is ephemeral (the vault payment pop-up); notices go out as follow-ups.
   if (interaction.isButton() && interaction.customId.startsWith(CONFIRM_PREFIX)) {
     const sessionId = interaction.customId.slice(CONFIRM_PREFIX.length);
-    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    await interaction.deferUpdate();
+    const notify = (title, body) => {
+      const reply = noticeMessage(title, body);
+      return interaction.followUp({ ...reply, flags: reply.flags | MessageFlags.Ephemeral });
+    };
 
     let session;
     try {
       session = await stripe.checkout.sessions.retrieve(sessionId);
     } catch (err) {
       console.error('Stripe session lookup failed:', err);
-      await interaction.editReply(
-        noticeMessage('Something went wrong', 'Could not check this payment with Stripe. Please try again.'),
-      );
+      await notify('Something went wrong', 'Could not check this payment with Stripe. Please try again.');
       return;
     }
 
     if (session.payment_status === 'paid') {
-      await interaction.message.edit(confirmedMessage(session, interaction.user));
-      await interaction.editReply(noticeMessage('Payment Confirmed', 'Thank you! Your payment has been received.'));
+      await interaction.editReply(confirmedMessage(session, interaction.user));
+      await notify('Payment Confirmed', 'Thank you! Your payment has been received.');
     } else if (session.status === 'expired') {
-      await interaction.editReply(
-        noticeMessage('Payment Link Expired', 'This payment link has expired. Please ask for a new one.'),
-      );
+      await notify('Payment Link Expired', 'This payment link has expired. Please ask for a new one.');
     } else {
-      await interaction.editReply(
-        noticeMessage(
-          'Payment Not Completed',
-          "This payment hasn't been completed yet. Pay using the button, then press Confirm again.",
-        ),
+      await notify(
+        'Payment Not Completed',
+        "This payment hasn't been completed yet. Pay using the button, then press Confirm again.",
       );
     }
   }
