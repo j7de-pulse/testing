@@ -11,10 +11,12 @@ const {
 } = require('discord.js');
 const { CATEGORIES, adChannelNames, classify, extractInviteCodes, isAdChannelName } = require('./classify');
 const { FinderStore } = require('./store');
+const { discoverFromRoblox } = require('./roblox');
 
 const RESOLVE_INTERVAL_MS = 2_000; // one invite lookup every 2s keeps well under Discord's limits
 const RECHECK_AFTER_MS = 24 * 60 * 60 * 1000; // refresh member counts / dead invites daily
 const RECHECK_SWEEP_MS = 60 * 60 * 1000;
+const DISCOVER_EVERY_MS = 6 * 60 * 60 * 1000; // look for new ER:LC servers on Roblox every 6 hours
 const PAGE_SIZE = 15;
 const MAX_TEXT = 3900; // Components V2 messages allow 4,000 characters of text in total
 const MAX_SCAN = 1000;
@@ -56,7 +58,7 @@ function buildCommands() {
   const categoryChoices = [...CATEGORIES, 'all'].map((c) => ({ name: CATEGORY_LABELS[c] ?? 'All', value: c }));
   const find = new SlashCommandBuilder()
     .setName('find')
-    .setDescription(`Get Discord links to ER:LC servers you can buy an ad in, ${PAGE_SIZE} at a time`)
+    .setDescription(`Get Discord links to ER:LC servers, ${PAGE_SIZE} at a time`)
     .addStringOption((o) => o.setName('category').setDescription('Server type (default: all)').addChoices(...categoryChoices))
     .addStringOption((o) => o.setName('query').setDescription('Name contains...').setMaxLength(40))
     .addIntegerOption((o) => o.setName('min_members').setDescription('Minimum member count').setMinValue(0))
@@ -122,7 +124,7 @@ function buildCommands() {
   return [find.toJSON(), finder.toJSON()];
 }
 
-function createFinder({ client, dataPath, allowedUserIds = [] }) {
+function createFinder({ client, dataPath, allowedUserIds = [], discover = discoverFromRoblox, fetchImpl = fetch }) {
   const store = new FinderStore(dataPath);
   const queue = new Map(); // invite code -> sightings waiting for the lookup
   let working = false;
@@ -142,7 +144,7 @@ function createFinder({ client, dataPath, allowedUserIds = [] }) {
   }
 
   function reclassify(server) {
-    const result = classify(server.name, server.description, server.adText);
+    const result = classify(server.name, server.description, server.adText, server.groupText);
     return {
       erlc: server.manualCategory ? server.manualCategory !== 'unrelated' : result.erlc,
       category: server.manualCategory ?? result.category,
@@ -199,15 +201,18 @@ function createFinder({ client, dataPath, allowedUserIds = [] }) {
     const server = store.server(guildId);
     if (!server) return;
     const updates = {};
-    if (sightings.length) {
-      const latest = sightings[sightings.length - 1];
+    const ads = sightings.filter((s) => s.ad !== false);
+    const fromRoblox = sightings.find((s) => s.groupText);
+    if (fromRoblox) updates.groupText = fromRoblox.groupText; // the Roblox group that links to this server
+    if (ads.length) {
+      const latest = ads[ads.length - 1];
       const sources = [...(server.sources ?? [])];
-      for (const { source } of sightings) {
+      for (const { source } of ads) {
         if (!sources.some((s) => s.channelId === source.channelId)) sources.push(source);
       }
       Object.assign(updates, {
         adText: latest.adText,
-        adSightings: (server.adSightings ?? 0) + sightings.length,
+        adSightings: (server.adSightings ?? 0) + ads.length,
         lastAdAt: latest.at,
         sources: sources.slice(-MAX_SOURCES),
       });
@@ -258,7 +263,34 @@ function createFinder({ client, dataPath, allowedUserIds = [] }) {
     }
   }
 
+  let discovery = null;
+
+  /** Search Roblox for ER:LC groups and queue every Discord invite they link to. */
+  function runDiscovery() {
+    if (discovery) return discovery;
+    console.log('Finder: searching Roblox for ER:LC servers');
+    const onInvite = (code, groupText) => enqueue(code, { groupText, ad: false, source: { type: 'roblox' }, at: Date.now() });
+    discovery = discover({ onInvite, fetchImpl })
+      .then(({ groups, invites }) => {
+        // Nothing came back (Roblox down or blocking us): try again in 15 minutes instead of 6 hours.
+        store.data.lastDiscoveryAt = groups ? Date.now() : Date.now() - DISCOVER_EVERY_MS + 15 * 60 * 1000;
+        store.save();
+        console.log(`Finder: Roblox search done, ${groups} groups, ${invites} Discord invites queued`);
+      })
+      .catch((err) => console.error('Finder: Roblox search failed:', err))
+      .finally(() => {
+        discovery = null;
+      });
+    return discovery;
+  }
+
+  function discoverIfDue() {
+    if (Date.now() - (store.data.lastDiscoveryAt ?? 0) > DISCOVER_EVERY_MS) runDiscovery();
+  }
+
   function start() {
+    discoverIfDue();
+    setInterval(discoverIfDue, RECHECK_SWEEP_MS).unref();
     for (const guild of client.guilds.cache.values()) autoWatch(guild);
     client.on('guildCreate', autoWatch);
     client.on('channelCreate', (channel) => channel.guild && autoWatch(channel.guild));
@@ -291,7 +323,7 @@ function createFinder({ client, dataPath, allowedUserIds = [] }) {
   /** You can buy an ad there: it has an ad channel (community, advertisements, paid ads...) or offers paid ads. */
   const sellsAds = (s) => s.sellsAds || s.adChannels?.length > 0;
 
-  /** ER:LC servers with a live invite that sell ads. */
+  /** ER:LC servers with a live invite; ones you can buy an ad in come first. */
   function search({ category, query, minMembers, sort }) {
     const needle = query?.toLowerCase();
     const sorters = {
@@ -300,26 +332,25 @@ function createFinder({ client, dataPath, allowedUserIds = [] }) {
       ads: (a, b) => (b.adSightings ?? 0) - (a.adSightings ?? 0),
     };
     return store.servers
-      .filter((s) => s.erlc && s.alive !== false && sellsAds(s))
+      .filter((s) => s.erlc && s.alive !== false)
       .filter((s) => category === 'all' || s.category === category)
       .filter((s) => !needle || s.name?.toLowerCase().includes(needle))
       .filter((s) => (s.members ?? 0) >= (minMembers ?? 0))
-      .sort(sorters[sort] ?? sorters.members);
+      .sort((a, b) => sellsAds(b) - sellsAds(a) || (sorters[sort] ?? sorters.members)(a, b));
   }
 
   /** Why /find came back empty, so it's clear whether the finder has no data or everything was filtered out. */
   function emptyHelp(params) {
-    const erlc = store.servers.filter((s) => s.erlc && s.alive !== false);
-    const selling = erlc.filter(sellsAds).length;
+    if (discovery || queue.size) {
+      return (
+        `Collecting ER:LC servers right now: **${fmt(store.servers.length)}** looked up, **${fmt(queue.size)}** waiting. ` +
+        'Run `/find` again in a few minutes.'
+      );
+    }
     const filtered = params.category !== 'all' || params.query || params.minMembers;
     return (
-      `No links yet. So far the finder has looked up **${fmt(store.servers.length)}** servers: ` +
-      `**${fmt(erlc.length)}** are ER:LC and **${fmt(selling)}** of those sell ads${filtered ? ' (before your filters)' : ''}. ` +
-      `Invites waiting for lookup: **${fmt(queue.size)}**. Watched channels: **${fmt(Object.keys(store.data.watched).length)}**.\n\n` +
-      'The finder only knows servers whose invite links it has seen. Feed it links:\n' +
-      '- Paste links into `/finder add` (up to 25 at once)\n' +
-      '- Use `/finder watch` or `/finder scan` on a channel where server ads are posted\n' +
-      '- Add the bot to ad / partnership servers; it watches their ad channels by itself'
+      `No ER:LC servers found${filtered ? ' with those filters' : ''} yet ` +
+      `(${fmt(store.servers.length)} servers looked up). The bot searches for new ones every 6 hours.`
     );
   }
 
@@ -328,7 +359,8 @@ function createFinder({ client, dataPath, allowedUserIds = [] }) {
     const pages = Math.max(1, Math.ceil(results.length / PAGE_SIZE));
     page = Math.min(Math.max(0, page), pages - 1);
     const label = params.category === 'all' ? 'All' : CATEGORY_LABELS[params.category];
-    const header = `# ER:LC ${label} Server Links\n-# ${fmt(results.length)} found · ${SORTS[params.sort] ?? SORTS.members} · page ${page + 1}/${pages}`;
+    const collecting = discovery || queue.size ? ' · still collecting more' : '';
+    const header = `# ER:LC ${label} Server Links\n-# ${fmt(results.length)} found · ${SORTS[params.sort] ?? SORTS.members} · page ${page + 1}/${pages}${collecting}`;
     let body = results.length
       ? results.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE).map((s) => `https://discord.gg/${s.inviteCode}`).join('\n')
       : emptyHelp(params);
@@ -411,6 +443,7 @@ function createFinder({ client, dataPath, allowedUserIds = [] }) {
     const opts = interaction.options;
 
     if (interaction.commandName === 'find') {
+      discoverIfDue();
       const params = {
         category: opts.getString('category') ?? 'all',
         query: opts.getString('query') ?? undefined,

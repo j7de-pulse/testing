@@ -4,7 +4,11 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { adChannelNames, classify, extractInviteCodes, isAdChannelName } = require('../src/finder/classify');
-const { createFinder } = require('../src/finder');
+const { createFinder: realCreateFinder } = require('../src/finder');
+const { discoverFromRoblox } = require('../src/finder/roblox');
+
+// Tests never reach Roblox; the discovery test below feeds it fake responses.
+const createFinder = (opts) => realCreateFinder({ discover: async () => ({ groups: 0, invites: 0 }), ...opts });
 
 test('extracts invite codes from ads', () => {
   const ad = 'Join us! discord.gg/LibertyRP and https://discord.com/invite/AbC-12 (again: discord.gg/LibertyRP)';
@@ -99,7 +103,8 @@ test('collects ads from watched channels and searches them', async () => {
   assert.match(text, /discord\.gg\/staterp/);
   assert.match(text, /discord\.gg\/nova/);
   assert.doesNotMatch(text, /discord\.gg\/mc\b/);
-  assert.doesNotMatch(text, /discord\.gg\/partner/);
+  // Servers that don't sell ads are still listed, after the ones you can buy an ad in.
+  assert.ok(text.indexOf('discord.gg/partner') > text.indexOf('discord.gg/staterp'));
 
   // The invite points at a paid ads channel, so that channel is recorded.
   await finder.handleInteraction(interaction('add', { invite: 'discord.gg/hub' }));
@@ -231,4 +236,30 @@ test('/finder add takes several links at once', async () => {
   assert.match(reply, /staterp — ER:LC, but no ad selling seen/);
   assert.match(reply, /mc — not ER:LC related/);
   assert.match(reply, /gone` — expired or invalid/);
+});
+
+test('finds ER:LC Discord links from Roblox groups with no setup', async () => {
+  const responses = {
+    'groups/search': (url) =>
+      url.includes('keyword=erlc&')
+        ? { data: [{ id: 1, name: 'Pulse Customs', description: 'ERLC liveries' }, { id: 2, name: 'State RP', description: 'ER:LC RP discord.gg/staterp' }] }
+        : { data: [{ id: 1, name: 'Pulse Customs', description: 'ERLC liveries' }] },
+    'groups/1/social-links': () => ({ data: [{ type: 'Discord', url: 'https://discord.gg/pulsecustoms' }] }),
+    'groups/2/social-links': () => ({ data: [] }),
+  };
+  const fetchImpl = async (url) => {
+    const key = Object.keys(responses).find((k) => url.includes(k));
+    return { ok: true, status: 200, json: async () => responses[key](url) };
+  };
+  const found = [];
+  const realSetTimeout = global.setTimeout;
+  global.setTimeout = (fn) => (fn(), 0); // skip the polite delays between requests
+  try {
+    const result = await discoverFromRoblox({ fetchImpl, onInvite: (code, text) => found.push([code, text]) });
+    assert.deepStrictEqual(result, { groups: 2, invites: 2 });
+  } finally {
+    global.setTimeout = realSetTimeout;
+  }
+  assert.deepStrictEqual(found.map(([code]) => code).sort(), ['pulsecustoms', 'staterp']);
+  assert.match(found.find(([code]) => code === 'pulsecustoms')[1], /ERLC liveries/);
 });

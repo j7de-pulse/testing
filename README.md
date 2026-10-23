@@ -18,6 +18,9 @@ Pressing **Confirm** checks the Checkout Session with Stripe; only if Stripe rep
 Finds ER:LC **roleplay**, **design** and **misc** servers that **sell ads**, so you can join them and buy one.
 
 **How servers are found**
+0. **By itself, no setup** – every 6 hours (and on start) the bot searches Roblox's public group search for ER:LC
+   communities (`erlc`, `erlc roleplay`, `erlc designs`, `liberty county roleplay`...) and collects the Discord links
+   those groups list. Just run `/find`. Railway's logs show `Finder: Roblox search done, N groups, M Discord invites queued`.
 1. **Ad channels** – `/finder watch channel:#ads` makes the bot read every new message in an
    advertisement / partnership channel, including ads posted by bots and webhooks in embeds. `/finder scan` reads
    the channel's older messages too (up to 1,000). Add the bot to ER:LC ad / partnership servers and watch their ad
@@ -41,7 +44,7 @@ Finds ER:LC **roleplay**, **design** and **misc** servers that **sell ads**, so 
 
 **Commands** (only the users in `FINDER_USER_IDS` can use them; by default `1068719082700029952` and
 `737181735846019112`)
-- `/find [category] [query] [min_members] [sort]` – just the Discord links (e.g. `https://discord.gg/pulsecustoms`), 15 at a time; **Next 15** / **Previous 15**
+- `/find [category] [query] [min_members] [sort]` – just the Discord links of ER:LC servers (ones selling ads first) (e.g. `https://discord.gg/pulsecustoms`), 15 at a time; **Next 15** / **Previous 15**
   buttons page through the rest. Category defaults to All
 - `/finder info server:<invite, ID or name>` – details, scores and the latest ad
 - `/finder add invite:<links>` – submit up to 25 servers at once
