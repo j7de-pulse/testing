@@ -94,21 +94,21 @@ test('collects ads from watched channels and searches them', async () => {
 
   await finder.handleInteraction(interaction('search'));
   const text = JSON.stringify(replies.at(-1));
-  assert.match(text, /State Roleplay/);
-  assert.match(text, /Nova Designs/);
-  assert.doesNotMatch(text, /Block SMP/);
-  assert.doesNotMatch(text, /Partner County RP/);
+  assert.match(text, /discord\.gg\/staterp/);
+  assert.match(text, /discord\.gg\/nova/);
+  assert.doesNotMatch(text, /discord\.gg\/mc\b/);
+  assert.doesNotMatch(text, /discord\.gg\/partner/);
 
   // The invite points at a paid ads channel, so that channel is recorded.
   await finder.handleInteraction(interaction('add', { invite: 'discord.gg/hub' }));
   assert.match(JSON.stringify(replies.at(-1)), /Ad channels:\*\* #💸┃paid-ads/);
 
   await finder.handleInteraction(interaction('search', { category: 'design' }));
-  assert.doesNotMatch(JSON.stringify(replies.at(-1)), /State Roleplay/);
+  assert.doesNotMatch(JSON.stringify(replies.at(-1)), /discord\.gg\/staterp/);
 
   await finder.handleInteraction(interaction('category', { server: 'Nova Designs', category: 'misc' }));
   await finder.handleInteraction(interaction('search', { category: 'misc' }));
-  assert.match(JSON.stringify(replies.at(-1)), /Nova Designs/);
+  assert.match(JSON.stringify(replies.at(-1)), /discord\.gg\/nova/);
 });
 
 test('/find shows 15 servers at a time with a Next 15 button', async () => {
@@ -135,16 +135,16 @@ test('/find shows 15 servers at a time with a Next 15 button', async () => {
   await finder.handleInteraction({ ...base, commandName: 'find', options: { getString: () => null, getInteger: () => null }, reply: async (r) => (reply = r) });
   let text = JSON.stringify(reply);
   assert.match(text, /20 found/);
-  assert.match(text, /15\. ERLC Roleplay 15\b/);
-  assert.doesNotMatch(text, /ERLC Roleplay 16\b/);
+  assert.match(text, /discord\.gg\/s15\b/);
+  assert.doesNotMatch(text, /discord\.gg\/s16\b/);
 
   const next = reply.components[0].components.at(-1).components[1];
   assert.strictEqual(next.label, 'Next 15');
   await finder.handleInteraction({ isButton: () => true, customId: next.custom_id, update: async (r) => (reply = r) });
   text = JSON.stringify(reply);
-  assert.match(text, /16\. ERLC Roleplay 16\b/);
-  assert.match(text, /20\. ERLC Roleplay 20\b/);
-  assert.doesNotMatch(text, /ERLC Roleplay 15\b/);
+  assert.match(text, /discord\.gg\/s16\b/);
+  assert.match(text, /discord\.gg\/s20\b/);
+  assert.doesNotMatch(text, /discord\.gg\/s15\b/);
 });
 
 test('only allowed users can use the finder', async () => {
@@ -163,6 +163,6 @@ test('only allowed users can use the finder', async () => {
     return reply;
   };
   assert.match(await run('123'), /Not Allowed/);
-  assert.match(await run('737181735846019112'), /ER:LC All Servers/);
-  assert.match(await run('1068719082700029952'), /ER:LC All Servers/);
+  assert.match(await run('737181735846019112'), /ER:LC All Server Links/);
+  assert.match(await run('1068719082700029952'), /ER:LC All Server Links/);
 });

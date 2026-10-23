@@ -39,7 +39,7 @@ Finds ER:LC **roleplay**, **design** and **misc** servers that **sell ads**, so 
 
 **Commands** (only the users in `FINDER_USER_IDS` can use them; by default `1068719082700029952` and
 `737181735846019112`)
-- `/find [category] [query] [min_members] [sort]` – lists servers 15 at a time with invites; **Next 15** / **Previous 15**
+- `/find [category] [query] [min_members] [sort]` – just the Discord links (e.g. `https://discord.gg/pulsecustoms`), 15 at a time; **Next 15** / **Previous 15**
   buttons page through the rest. Category defaults to All
 - `/finder info server:<invite, ID or name>` – details, scores and the latest ad
 - `/finder add invite:<invite>` – submit a server

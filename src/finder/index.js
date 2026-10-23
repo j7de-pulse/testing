@@ -54,7 +54,7 @@ function buildCommands() {
   const categoryChoices = [...CATEGORIES, 'all'].map((c) => ({ name: CATEGORY_LABELS[c] ?? 'All', value: c }));
   const find = new SlashCommandBuilder()
     .setName('find')
-    .setDescription(`List ER:LC servers you can buy an ad in, ${PAGE_SIZE} at a time`)
+    .setDescription(`Get Discord links to ER:LC servers you can buy an ad in, ${PAGE_SIZE} at a time`)
     .addStringOption((o) => o.setName('category').setDescription('Server type (default: all)').addChoices(...categoryChoices))
     .addStringOption((o) => o.setName('query').setDescription('Name contains...').setMaxLength(40))
     .addIntegerOption((o) => o.setName('min_members').setDescription('Minimum member count').setMinValue(0))
@@ -280,23 +280,14 @@ function createFinder({ client, dataPath, allowedUserIds = [] }) {
       .sort(sorters[sort] ?? sorters.members);
   }
 
-  function serverLine(s, n) {
-    const name = (s.name ?? 'Unknown').slice(0, 50);
-    const where = s.adChannels?.length ? `buy in #${escapeMarkdown(s.adChannels[0].slice(0, 30))}` : 'offers paid ads';
-    return (
-      `**${n}. ${escapeMarkdown(name)}** — ${CATEGORY_LABELS[s.category]} · ${fmt(s.members)} members · ${where}\n` +
-      `https://discord.gg/${s.inviteCode}`
-    );
-  }
-
   function searchMessage(params, page) {
     const results = search(params);
     const pages = Math.max(1, Math.ceil(results.length / PAGE_SIZE));
     page = Math.min(Math.max(0, page), pages - 1);
     const label = params.category === 'all' ? 'All' : CATEGORY_LABELS[params.category];
-    const header = `# ER:LC ${label} Servers Selling Ads\n-# ${fmt(results.length)} found · ${SORTS[params.sort] ?? SORTS.members} · page ${page + 1}/${pages}`;
+    const header = `# ER:LC ${label} Server Links\n-# ${fmt(results.length)} found · ${SORTS[params.sort] ?? SORTS.members} · page ${page + 1}/${pages}`;
     let body = results.length
-      ? results.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE).map((s, i) => serverLine(s, page * PAGE_SIZE + i + 1)).join('\n\n')
+      ? results.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE).map((s) => `https://discord.gg/${s.inviteCode}`).join('\n')
       : 'No servers match yet. Add ad channels with `/finder watch` or submit one with `/finder add`.';
     if (header.length + body.length > MAX_TEXT) body = `${body.slice(0, MAX_TEXT - header.length - 1)}…`;
 
