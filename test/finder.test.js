@@ -3,7 +3,7 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { classify, extractInviteCodes } = require('../src/finder/classify');
+const { adChannelNames, classify, extractInviteCodes } = require('../src/finder/classify');
 const { createFinder } = require('../src/finder');
 
 test('extracts invite codes from ads', () => {
@@ -24,18 +24,24 @@ test('detects servers that take ads / partnerships', () => {
   assert.ok(!classify('x', 'ERLC RP, daily sessions').acceptsAds);
 });
 
+test('spots community / advertisements / paid ads channels', () => {
+  const names = ['general', '📢・advertisements', '┃paid-ads', 'community', 'community-chat', 'paid_advertisement', 'ads-rules', 'communityx', 'unpaid'];
+  assert.deepStrictEqual(adChannelNames(names), ['📢・advertisements', '┃paid-ads', 'community', 'community-chat', 'paid_advertisement']);
+});
+
 test('collects ads from watched channels and searches them', async () => {
   const dataPath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'finder-')), 'finder.json');
   const guilds = {
     staterp: { id: '1', name: 'State Roleplay', description: 'ER:LC roleplay, daily SSU', members: 900 },
     nova: { id: '2', name: 'Nova Designs', description: 'ERLC liveries and uniforms', members: 300 },
     mc: { id: '3', name: 'Block SMP', description: 'Minecraft', members: 5000 },
+    hub: { id: '4', name: 'ERLC Central', description: 'ER:LC hub', members: 50, channel: '💸┃paid-ads' },
   };
   const client = {
     async fetchInvite(code) {
       const g = guilds[code];
       if (!g) throw Object.assign(new Error('Unknown Invite'), { code: 10006 });
-      return { guild: { id: g.id, name: g.name, description: g.description, vanityURLCode: null, iconURL: () => null }, memberCount: g.members, presenceCount: 10 };
+      return { guild: { id: g.id, name: g.name, description: g.description, vanityURLCode: null, iconURL: () => null }, channel: { name: g.channel ?? 'welcome' }, memberCount: g.members, presenceCount: 10 };
     },
   };
   const finder = createFinder({ client, ownerIds: ['owner'], dataPath });
@@ -75,6 +81,10 @@ test('collects ads from watched channels and searches them', async () => {
   assert.match(text, /State Roleplay/);
   assert.match(text, /Nova Designs/);
   assert.doesNotMatch(text, /Block SMP/);
+
+  // The invite points at a paid ads channel, so that channel is recorded.
+  await finder.handleInteraction(interaction('add', { invite: 'discord.gg/hub' }));
+  assert.match(JSON.stringify(replies.at(-1)), /Ad channels:\*\* #💸┃paid-ads/);
 
   await finder.handleInteraction(interaction('search', { category: 'design' }));
   assert.doesNotMatch(JSON.stringify(replies.at(-1)), /State Roleplay/);

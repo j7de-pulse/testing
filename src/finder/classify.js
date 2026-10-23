@@ -52,6 +52,15 @@ const CATEGORY_TERMS = {
 // The server advertises or takes partnerships / ads.
 const ADS_RE = /\bpartner(ship)?s?\b|\badvertis\w*|\bads?\b|\bpromo(tion)?s?\b|\bad\s*channel|\bp\s*ping\b|\bpartner\s*ping\b/;
 
+// Channel names that show a server runs ads: community, advertisements, paid ads.
+// Decorations are ignored, so "📢・advertisements", "┃paid-ads" and "community-chat" all count.
+const AD_CHANNEL_RE = /(?:^|[^a-z])(?:community|advertisements?|paid[\s_-]*(?:ads?|advertisements?))(?:[^a-z]|$)/;
+
+/** The names in `names` that look like ad channels. */
+function adChannelNames(names) {
+  return names.filter((name) => AD_CHANNEL_RE.test(normalize(name)));
+}
+
 const CATEGORIES = ['roleplay', 'design', 'misc'];
 
 function score(text, terms) {
@@ -79,4 +88,4 @@ function classify(...parts) {
   return { erlc, erlcScore, category, scores, acceptsAds: ADS_RE.test(text) };
 }
 
-module.exports = { CATEGORIES, classify, extractInviteCodes, normalize };
+module.exports = { CATEGORIES, adChannelNames, classify, extractInviteCodes, normalize };

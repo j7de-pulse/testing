@@ -10,7 +10,7 @@ const {
   SlashCommandBuilder,
   escapeMarkdown,
 } = require('discord.js');
-const { CATEGORIES, classify, extractInviteCodes } = require('./classify');
+const { CATEGORIES, adChannelNames, classify, extractInviteCodes } = require('./classify');
 const { FinderStore } = require('./store');
 
 const RESOLVE_INTERVAL_MS = 2_000; // one invite lookup every 2s keeps well under Discord's limits
@@ -178,7 +178,13 @@ function createFinder({ client, ownerIds, dataPath }) {
       guildId = invite.guild.id;
       store.setInvite(code, guildId);
       const existing = store.server(guildId);
+      // A bot that is in the server sees every channel; otherwise only the invite's own channel is visible.
+      const joined = client.guilds?.cache.get(guildId);
+      const adChannels = joined
+        ? adChannelNames(joined.channels.cache.map((c) => c.name))
+        : [...new Set([...(existing?.adChannels ?? []), ...adChannelNames([invite.channel?.name ?? ''])])];
       store.upsertServer(guildId, {
+        adChannels,
         name: invite.guild.name,
         description: invite.guild.description ?? '',
         icon: invite.guild.iconURL?.({ size: 128 }) ?? null,
@@ -257,7 +263,10 @@ function createFinder({ client, ownerIds, dataPath }) {
     return store.servers.find((s) => s.name?.toLowerCase() === needle) ?? store.servers.find((s) => s.name?.toLowerCase().includes(needle));
   }
 
-  /** ER:LC servers with a live invite that advertise (seen in an ad channel) or take ads / partners. */
+  /** Seen in an ad channel, mentions ads / partners, or has a community / advertisements / paid ads channel. */
+  const advertises = (s) => s.adSightings > 0 || s.acceptsAds || s.adChannels?.length > 0;
+
+  /** ER:LC servers with a live invite that advertise. */
   function search({ category, query, minMembers, sort }) {
     const needle = query?.toLowerCase();
     const sorters = {
@@ -266,7 +275,7 @@ function createFinder({ client, ownerIds, dataPath }) {
       ads: (a, b) => (b.adSightings ?? 0) - (a.adSightings ?? 0),
     };
     return store.servers
-      .filter((s) => s.erlc && s.alive !== false && (s.adSightings > 0 || s.acceptsAds))
+      .filter((s) => s.erlc && s.alive !== false && advertises(s))
       .filter((s) => category === 'all' || s.category === category)
       .filter((s) => !needle || s.name?.toLowerCase().includes(needle))
       .filter((s) => (s.members ?? 0) >= (minMembers ?? 0))
@@ -316,6 +325,7 @@ function createFinder({ client, ownerIds, dataPath }) {
         `- **Invite:** https://discord.gg/${s.inviteCode}${s.alive === false ? ' (expired)' : ''}\n` +
         `- **Advertises:** ${s.adSightings ? `seen in ${fmt(s.adSightings)} ads, last ${ts(s.lastAdAt)}` : 'not seen in an ad channel yet'}\n` +
         `- **Takes ads / partners:** ${s.acceptsAds ? 'yes' : 'not mentioned'}\n` +
+        `- **Ad channels:** ${s.adChannels?.length ? s.adChannels.map((n) => `#${escapeMarkdown(n)}`).join(', ') : 'none seen'}\n` +
         `- **Scores:** ER:LC ${scores.erlc ?? 0} · roleplay ${scores.roleplay ?? 0} · design ${scores.design ?? 0} · misc ${scores.misc ?? 0}\n` +
         `- **First found:** ${ts(s.firstSeen)} · **Checked:** ${ts(s.lastChecked)}\n` +
         `-# Server ID ${s.guildId}${ad}`,
@@ -323,10 +333,10 @@ function createFinder({ client, ownerIds, dataPath }) {
   }
 
   function csv() {
-    const cols = ['guildId', 'name', 'category', 'members', 'online', 'inviteCode', 'alive', 'adSightings', 'acceptsAds', 'lastAdAt', 'firstSeen', 'description'];
+    const cols = ['guildId', 'name', 'category', 'members', 'online', 'inviteCode', 'alive', 'adSightings', 'acceptsAds', 'adChannels', 'lastAdAt', 'firstSeen', 'description'];
     const cell = (col, value) => {
       if (value == null) return '';
-      const str = ['lastAdAt', 'firstSeen'].includes(col) ? new Date(value).toISOString() : String(value);
+      const str = ['lastAdAt', 'firstSeen'].includes(col) ? new Date(value).toISOString() : [].concat(value).join('; ');
       return /[",\n]/.test(str) ? `"${str.replace(/"/g, '""')}"` : str;
     };
     const rows = store.servers.filter((s) => s.erlc).map((s) => cols.map((col) => cell(col, s[col])).join(','));
