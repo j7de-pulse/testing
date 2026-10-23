@@ -271,13 +271,17 @@ function createFinder({ client, dataPath, allowedUserIds = [], discover = discov
     console.log('Finder: searching Roblox for ER:LC servers');
     const onInvite = (code, groupText) => enqueue(code, { groupText, ad: false, source: { type: 'roblox' }, at: Date.now() });
     discovery = discover({ onInvite, fetchImpl })
-      .then(({ groups, invites }) => {
-        // Nothing came back (Roblox down or blocking us): try again in 15 minutes instead of 6 hours.
-        store.data.lastDiscoveryAt = groups ? Date.now() : Date.now() - DISCOVER_EVERY_MS + 15 * 60 * 1000;
+      .then((report) => {
+        // No invites came back (Roblox down or blocking us): try again in 15 minutes instead of 6 hours.
+        store.data.lastDiscoveryAt = report.invites ? Date.now() : Date.now() - DISCOVER_EVERY_MS + 15 * 60 * 1000;
+        store.data.lastDiscovery = { ...report, at: Date.now() };
         store.save();
-        console.log(`Finder: Roblox search done, ${groups} groups, ${invites} Discord invites queued`);
+        console.log('Finder: Roblox search done', JSON.stringify(report));
       })
-      .catch((err) => console.error('Finder: Roblox search failed:', err))
+      .catch((err) => {
+        store.data.lastDiscovery = { error: err.message, at: Date.now() };
+        console.error('Finder: Roblox search failed:', err);
+      })
       .finally(() => {
         discovery = null;
       });
@@ -286,6 +290,21 @@ function createFinder({ client, dataPath, allowedUserIds = [], discover = discov
 
   function discoverIfDue() {
     if (Date.now() - (store.data.lastDiscoveryAt ?? 0) > DISCOVER_EVERY_MS) runDiscovery();
+  }
+
+  /** What the last Roblox search found, step by step. */
+  function robloxStatus() {
+    const r = store.data.lastDiscovery;
+    if (discovery) return '**Roblox search:** running now';
+    if (!r) return '**Roblox search:** has not run yet';
+    const when = `<t:${Math.floor(r.at / 1000)}:R>`;
+    if (r.error) return `**Roblox search** ${when}: failed — \`${r.error}\``;
+    return (
+      `**Roblox search** ${when}:\n` +
+      `- Groups found: **${fmt(r.groups)}**${r.searchErrors ? ` (${fmt(r.searchErrors)} searches failed: \`${r.searchError}\`)` : ''}\n` +
+      `- Discord links read: **${fmt(r.linksOk)}** groups ok, **${fmt(r.linksFailed)}** failed${r.linkError ? ` (\`${r.linkError}\`)` : ''}\n` +
+      `- Discord invites found: **${fmt(r.invites)}**`
+    );
   }
 
   function start() {
@@ -350,7 +369,7 @@ function createFinder({ client, dataPath, allowedUserIds = [], discover = discov
     const filtered = params.category !== 'all' || params.query || params.minMembers;
     return (
       `No ER:LC servers found${filtered ? ' with those filters' : ''} yet ` +
-      `(${fmt(store.servers.length)} servers looked up). The bot searches for new ones every 6 hours.`
+      `(${fmt(store.servers.length)} servers looked up). Run \`/finder stats\` to see what the last search found.`
     );
   }
 
@@ -527,7 +546,10 @@ function createFinder({ client, dataPath, allowedUserIds = [], discover = discov
             `- **Expired invites:** ${fmt(erlc.filter((s) => s.alive === false).length)}\n` +
             `- **Non ER:LC servers skipped:** ${fmt(store.servers.length - erlc.length)}\n` +
             `- **Watched channels here:** ${store.watchedIn(interaction.guildId).map((id) => `<#${id}>`).join(', ') || 'none'}\n` +
-            `- **Invites waiting for lookup:** ${fmt(queue.size)}`,
+            `- **Invites waiting for lookup:** ${fmt(queue.size)}\n` +
+            `- **Invites looked up:** ${fmt(Object.keys(store.data.invites).length)} ` +
+            `(${fmt(Object.values(store.data.invites).filter((i) => !i.guildId).length)} invalid or expired)\n` +
+            robloxStatus(),
         ),
       );
     }

@@ -256,7 +256,7 @@ test('finds ER:LC Discord links from Roblox groups with no setup', async () => {
   global.setTimeout = (fn) => (fn(), 0); // skip the polite delays between requests
   try {
     const result = await discoverFromRoblox({ fetchImpl, onInvite: (code, text) => found.push([code, text]) });
-    assert.deepStrictEqual(result, { groups: 2, invites: 2 });
+    assert.deepStrictEqual(result, { groups: 2, invites: 2, searchErrors: 0, searchError: null, linksOk: 2, linksFailed: 0, linkError: null });
   } finally {
     global.setTimeout = realSetTimeout;
   }

@@ -44,8 +44,8 @@ async function getJson(url, fetchImpl) {
  */
 async function discoverFromRoblox({ onInvite, fetchImpl = fetch, log = console }) {
   const seen = new Set();
-  let groups = 0;
-  let invites = 0;
+  // Counts reported by /finder stats, so a run that finds nothing shows which step failed.
+  const report = { groups: 0, invites: 0, searchErrors: 0, searchError: null, linksOk: 0, linksFailed: 0, linkError: null };
 
   for (const term of SEARCH_TERMS) {
     let cursor = '';
@@ -56,25 +56,30 @@ async function discoverFromRoblox({ onInvite, fetchImpl = fetch, log = console }
         result = await getJson(url, fetchImpl);
       } catch (err) {
         log.warn(`Finder: Roblox group search for "${term}" failed: ${err.message}`);
+        report.searchErrors++;
+        report.searchError ??= err.message;
         break;
       }
 
       for (const group of result.data ?? []) {
         if (seen.has(group.id)) continue;
         seen.add(group.id);
-        groups++;
+        report.groups++;
         const text = `${group.name}\n${group.description ?? ''}`;
         const codes = new Set(extractInviteCodes(text));
         try {
           const links = await getJson(`https://groups.roblox.com/v1/groups/${group.id}/social-links`, fetchImpl);
+          report.linksOk++;
           for (const link of links.data ?? []) {
             for (const code of extractInviteCodes(link.url)) codes.add(code);
           }
         } catch (err) {
           // Some groups hide their links; the description may still have one.
+          report.linksFailed++;
+          report.linkError ??= err.message;
         }
         for (const code of codes) {
-          invites++;
+          report.invites++;
           onInvite(code, text);
         }
       }
@@ -83,7 +88,7 @@ async function discoverFromRoblox({ onInvite, fetchImpl = fetch, log = console }
       if (!cursor) break;
     }
   }
-  return { groups, invites };
+  return report;
 }
 
 module.exports = { discoverFromRoblox, SEARCH_TERMS };
