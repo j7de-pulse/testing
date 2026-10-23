@@ -44,7 +44,7 @@ test('collects ads from watched channels and searches them', async () => {
       return { guild: { id: g.id, name: g.name, description: g.description, vanityURLCode: null, iconURL: () => null }, channel: { name: g.channel ?? 'welcome' }, memberCount: g.members, presenceCount: 10 };
     },
   };
-  const finder = createFinder({ client, ownerIds: ['owner'], dataPath });
+  const finder = createFinder({ client, dataPath });
   assert.deepStrictEqual(finder.commands.map((c) => c.name), ['find', 'finder']);
 
   const replies = [];
@@ -102,7 +102,7 @@ test('/find shows 15 servers at a time with a Next 15 button', async () => {
       return { guild: { id: String(n), name: `ERLC Roleplay ${n}`, description: 'ER:LC roleplay', vanityURLCode: null, iconURL: () => null }, memberCount: 1000 - n };
     },
   };
-  const finder = createFinder({ client, ownerIds: [], dataPath });
+  const finder = createFinder({ client, dataPath });
   let reply;
   const base = { user: { id: 'u' }, guildId: 'home', isButton: () => false, isChatInputCommand: () => true };
   for (let n = 1; n <= 20; n++) {
@@ -128,4 +128,24 @@ test('/find shows 15 servers at a time with a Next 15 button', async () => {
   assert.match(text, /16\. ERLC Roleplay 16\b/);
   assert.match(text, /20\. ERLC Roleplay 20\b/);
   assert.doesNotMatch(text, /ERLC Roleplay 15\b/);
+});
+
+test('only allowed users can use the finder', async () => {
+  const dataPath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'finder-')), 'finder.json');
+  const finder = createFinder({ client: {}, dataPath, allowedUserIds: ['1068719082700029952', '737181735846019112'] });
+  const run = async (userId) => {
+    let reply;
+    await finder.handleInteraction({
+      user: { id: userId },
+      commandName: 'find',
+      isButton: () => false,
+      isChatInputCommand: () => true,
+      options: { getString: () => null, getInteger: () => null },
+      reply: async (r) => (reply = JSON.stringify(r)),
+    });
+    return reply;
+  };
+  assert.match(await run('123'), /Not Allowed/);
+  assert.match(await run('737181735846019112'), /ER:LC All Servers/);
+  assert.match(await run('1068719082700029952'), /ER:LC All Servers/);
 });

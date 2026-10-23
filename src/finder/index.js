@@ -6,7 +6,6 @@ const {
   AttachmentBuilder,
   ChannelType,
   MessageFlags,
-  PermissionFlagsBits,
   SlashCommandBuilder,
   escapeMarkdown,
 } = require('discord.js');
@@ -83,7 +82,7 @@ function buildCommands() {
     .addSubcommand((sub) =>
       sub
         .setName('watch')
-        .setDescription('Collect invites from an ad / partnership channel (Manage Server)')
+        .setDescription('Collect invites from an ad / partnership channel')
         .addChannelOption((o) =>
           o.setName('channel').setDescription('Ad channel').setRequired(true).addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement),
         ),
@@ -91,13 +90,13 @@ function buildCommands() {
     .addSubcommand((sub) =>
       sub
         .setName('unwatch')
-        .setDescription('Stop collecting invites from a channel (Manage Server)')
+        .setDescription('Stop collecting invites from a channel')
         .addChannelOption((o) => o.setName('channel').setDescription('Ad channel').setRequired(true)),
     )
     .addSubcommand((sub) =>
       sub
         .setName('scan')
-        .setDescription("Collect invites from a channel's past messages (Manage Server)")
+        .setDescription("Collect invites from a channel's past messages")
         .addChannelOption((o) =>
           o.setName('channel').setDescription('Ad channel').setRequired(true).addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement),
         )
@@ -106,7 +105,7 @@ function buildCommands() {
     .addSubcommand((sub) =>
       sub
         .setName('category')
-        .setDescription('Fix a server\'s category by hand (owner only)')
+        .setDescription('Fix a server\'s category by hand')
         .addStringOption((o) => o.setName('server').setDescription('Invite link, server ID or name').setRequired(true))
         .addStringOption((o) =>
           o
@@ -116,19 +115,16 @@ function buildCommands() {
             .addChoices(...[...CATEGORIES, 'unrelated', 'auto'].map((c) => ({ name: CATEGORY_LABELS[c] ?? 'Automatic', value: c }))),
         ),
     )
-    .addSubcommand((sub) => sub.setName('export').setDescription('Download every ER:LC server found as CSV (owner only)'))
+    .addSubcommand((sub) => sub.setName('export').setDescription('Download every ER:LC server found as CSV'))
     .addSubcommand((sub) => sub.setName('stats').setDescription('Show how many servers have been found'));
   return [find.toJSON(), finder.toJSON()];
 }
 
-function createFinder({ client, ownerIds, dataPath }) {
+function createFinder({ client, dataPath, allowedUserIds = [] }) {
   const store = new FinderStore(dataPath);
   const queue = new Map(); // invite code -> sightings waiting for the lookup
   let working = false;
 
-  const isOwner = (user) => ownerIds.includes(user.id);
-  const canManage = (interaction) =>
-    isOwner(interaction.user) || interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild);
 
   /** Queue invite codes from an ad. `sighting` is null for a plain re-check. */
   function enqueue(code, sighting) {
@@ -369,6 +365,11 @@ function createFinder({ client, ownerIds, dataPath }) {
       return true;
     }
     if (!interaction.isChatInputCommand()) return false;
+    if (!['find', 'finder'].includes(interaction.commandName)) return false;
+    if (allowedUserIds.length && !allowedUserIds.includes(interaction.user.id)) {
+      await interaction.reply(notice('Not Allowed', "You don't have access to the server finder."));
+      return true;
+    }
     const opts = interaction.options;
 
     if (interaction.commandName === 'find') {
@@ -381,7 +382,6 @@ function createFinder({ client, ownerIds, dataPath }) {
       await interaction.reply(ephemeral(searchMessage(params, 0)));
       return true;
     }
-    if (interaction.commandName !== 'finder') return false;
 
     const sub = opts.getSubcommand();
     if (sub === 'info') {
@@ -406,10 +406,6 @@ function createFinder({ client, ownerIds, dataPath }) {
       const server = guildId && store.server(guildId);
       await interaction.editReply(server ? infoMessage(server) : textMessage('### Invalid Invite\nThat invite has expired or does not exist.'));
     } else if (['watch', 'unwatch', 'scan'].includes(sub)) {
-      if (!canManage(interaction)) {
-        await interaction.reply(notice('Not Allowed', 'You need **Manage Server** to change which channels the finder reads.'));
-        return true;
-      }
       const channel = opts.getChannel('channel', true);
       if (sub === 'watch') {
         store.watch(channel.id, interaction.guildId);
@@ -429,10 +425,6 @@ function createFinder({ client, ownerIds, dataPath }) {
         }
       }
     } else if (sub === 'category') {
-      if (!isOwner(interaction.user)) {
-        await interaction.reply(notice('Not Allowed', 'Only the owner can change categories.'));
-        return true;
-      }
       const server = findServer(opts.getString('server', true));
       if (!server) {
         await interaction.reply(notice('Not Found', 'The finder has no server matching that.'));
@@ -443,10 +435,6 @@ function createFinder({ client, ownerIds, dataPath }) {
       const updated = store.upsertServer(server.guildId, { ...reclassify({ ...server, manualCategory }), manualCategory });
       await interaction.reply(notice('Category Updated', `**${escapeMarkdown(updated.name)}** is now **${CATEGORY_LABELS[updated.category]}**.`));
     } else if (sub === 'export') {
-      if (!isOwner(interaction.user)) {
-        await interaction.reply(notice('Not Allowed', 'Only the owner can export the list.'));
-        return true;
-      }
       const file = new AttachmentBuilder(Buffer.from(csv()), { name: 'erlc-servers.csv' });
       await interaction.reply({ content: 'Every ER:LC server found so far:', files: [file], flags: MessageFlags.Ephemeral });
     } else if (sub === 'stats') {

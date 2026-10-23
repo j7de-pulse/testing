@@ -18,7 +18,7 @@ Pressing **Confirm** checks the Checkout Session with Stripe; only if Stripe rep
 Finds ER:LC **roleplay**, **design** and **misc** servers that advertise.
 
 **How servers are found**
-1. **Ad channels** – `/finder watch channel:#ads` (needs Manage Server) makes the bot read every new message in an
+1. **Ad channels** – `/finder watch channel:#ads` makes the bot read every new message in an
    advertisement / partnership channel, including ads posted by bots and webhooks in embeds. `/finder scan` reads
    the channel's older messages too (up to 1,000). Add the bot to ER:LC ad / partnership servers and watch their ad
    channels to grow the list.
@@ -36,14 +36,15 @@ Finds ER:LC **roleplay**, **design** and **misc** servers that advertise.
   finder sees just the channel each invite points to.
   Servers with nothing tying them to ER:LC are kept (so they aren't looked up again) but never listed.
 
-**Commands**
+**Commands** (only the users in `FINDER_USER_IDS` can use them; by default `1068719082700029952` and
+`737181735846019112`)
 - `/find [category] [query] [min_members] [sort]` – lists servers 15 at a time with invites; **Next 15** / **Previous 15**
   buttons page through the rest. Category defaults to All
 - `/finder info server:<invite, ID or name>` – details, scores and the latest ad
 - `/finder add invite:<invite>` – submit a server
-- `/finder watch|unwatch|scan channel:<channel>` – Manage Server
-- `/finder category server:<...> category:<...>` – owner only, fixes a wrong category (`Automatic` undoes it)
-- `/finder export` – owner only, CSV of every ER:LC server found
+- `/finder watch|unwatch|scan channel:<channel>` – choose which channels are read
+- `/finder category server:<...> category:<...>` – fixes a wrong category (`Automatic` undoes it)
+- `/finder export` – CSV of every ER:LC server found
 - `/finder stats` – counts per category
 
 The bot only reads channels in servers it has been added to. It does not use self-bots or scrape listing sites,
