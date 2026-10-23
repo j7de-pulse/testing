@@ -124,7 +124,7 @@ function buildCommands() {
   return [find.toJSON(), finder.toJSON()];
 }
 
-function createFinder({ client, dataPath, allowedUserIds = [], discover = discoverFromRoblox, fetchImpl = fetch }) {
+function createFinder({ client, dataPath, allowedUserIds = [], robloxCookie, discover = discoverFromRoblox, fetchImpl = fetch }) {
   const store = new FinderStore(dataPath);
   const queue = new Map(); // invite code -> sightings waiting for the lookup
   let working = false;
@@ -270,7 +270,7 @@ function createFinder({ client, dataPath, allowedUserIds = [], discover = discov
     if (discovery) return discovery;
     console.log('Finder: searching Roblox for ER:LC servers');
     const onInvite = (code, groupText) => enqueue(code, { groupText, ad: false, source: { type: 'roblox' }, at: Date.now() });
-    discovery = discover({ onInvite, fetchImpl })
+    discovery = discover({ onInvite, cookie: robloxCookie, fetchImpl })
       .then((report) => {
         // No invites came back (Roblox down or blocking us): try again in 15 minutes instead of 6 hours.
         store.data.lastDiscoveryAt = report.invites ? Date.now() : Date.now() - DISCOVER_EVERY_MS + 15 * 60 * 1000;
@@ -295,12 +295,13 @@ function createFinder({ client, dataPath, allowedUserIds = [], discover = discov
   /** What the last Roblox search found, step by step. */
   function robloxStatus() {
     const r = store.data.lastDiscovery;
-    if (discovery) return '**Roblox search:** running now';
+    const account = robloxCookie ? 'logged in with ROBLOX_COOKIE' : 'not logged in (no ROBLOX_COOKIE)';
+    if (discovery) return `**Roblox search:** running now, ${account}`;
     if (!r) return '**Roblox search:** has not run yet';
     const when = `<t:${Math.floor(r.at / 1000)}:R>`;
     if (r.error) return `**Roblox search** ${when}: failed — \`${r.error}\``;
     return (
-      `**Roblox search** ${when}:\n` +
+      `**Roblox search** ${when}, ${account}:\n` +
       `- Groups found: **${fmt(r.groups)}**${r.searchErrors ? ` (${fmt(r.searchErrors)} searches failed: \`${r.searchError}\`)` : ''}\n` +
       `- Discord links read: **${fmt(r.linksOk)}** groups ok, **${fmt(r.linksFailed)}** failed${r.linkError ? ` (\`${r.linkError}\`)` : ''}\n` +
       `- Discord invites found: **${fmt(r.invites)}**`

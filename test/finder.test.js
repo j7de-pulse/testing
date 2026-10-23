@@ -247,7 +247,9 @@ test('finds ER:LC Discord links from Roblox groups with no setup', async () => {
     'groups/1/social-links': () => ({ data: [{ type: 'Discord', url: 'https://discord.gg/pulsecustoms' }] }),
     'groups/2/social-links': () => ({ data: [] }),
   };
-  const fetchImpl = async (url) => {
+  const cookies = [];
+  const fetchImpl = async (url, { headers }) => {
+    cookies.push(headers.cookie);
     const key = Object.keys(responses).find((k) => url.includes(k));
     return { ok: true, status: 200, json: async () => responses[key](url) };
   };
@@ -255,11 +257,12 @@ test('finds ER:LC Discord links from Roblox groups with no setup', async () => {
   const realSetTimeout = global.setTimeout;
   global.setTimeout = (fn) => (fn(), 0); // skip the polite delays between requests
   try {
-    const result = await discoverFromRoblox({ fetchImpl, onInvite: (code, text) => found.push([code, text]) });
+    const result = await discoverFromRoblox({ fetchImpl, cookie: 'abc', onInvite: (code, text) => found.push([code, text]) });
     assert.deepStrictEqual(result, { groups: 2, invites: 2, searchErrors: 0, searchError: null, linksOk: 2, linksFailed: 0, linkError: null });
   } finally {
     global.setTimeout = realSetTimeout;
   }
   assert.deepStrictEqual(found.map(([code]) => code).sort(), ['pulsecustoms', 'staterp']);
+  assert.ok(cookies.every((c) => c === '.ROBLOSECURITY=abc'));
   assert.match(found.find(([code]) => code === 'pulsecustoms')[1], /ERLC liveries/);
 });

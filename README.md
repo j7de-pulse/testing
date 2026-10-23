@@ -20,7 +20,8 @@ Finds ER:LC **roleplay**, **design** and **misc** servers that **sell ads**, so 
 **How servers are found**
 0. **By itself, no setup** – every 6 hours (and on start) the bot searches Roblox's public group search for ER:LC
    communities (`erlc`, `erlc roleplay`, `erlc designs`, `liberty county roleplay`...) and collects the Discord links
-   those groups list. Just run `/find`. Railway's logs show `Finder: Roblox search done, N groups, M Discord invites queued`.
+   those groups list. Just run `/find`. Roblox hides those links from logged-out visitors, so set `ROBLOX_COOKIE` to the
+   `.ROBLOSECURITY` cookie of a spare Roblox account (never your main one). Railway's logs show `Finder: Roblox search done, N groups, M Discord invites queued`.
 1. **Ad channels** – `/finder watch channel:#ads` makes the bot read every new message in an
    advertisement / partnership channel, including ads posted by bots and webhooks in embeds. `/finder scan` reads
    the channel's older messages too (up to 1,000). Add the bot to ER:LC ad / partnership servers and watch their ad
