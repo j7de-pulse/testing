@@ -376,6 +376,34 @@ const usdCommand = new SlashCommandBuilder()
     opt.setName('amount').setDescription('Amount in USD, e.g. 25 or 19.99').setRequired(true),
   );
 
+const convertCommand = new SlashCommandBuilder()
+  .setName('convert')
+  .setDescription('Convert USD to Robux (1,000 R$ = $7)')
+  .addStringOption((opt) => opt.setName('amount').setDescription('Amount in USD, e.g. 300').setRequired(true));
+
+const vaultCommand = new SlashCommandBuilder()
+  .setName('vault')
+  .setDescription('Post the Robux Vault panel (owner only)')
+  .addStringOption((opt) => opt.setName('stock').setDescription('Robux in stock, e.g. 5000').setRequired(true));
+
+const slashCommands = [usdCommand, convertCommand, vaultCommand].map((cmd) => cmd.toJSON());
+
+/** Parse a vault stock amount like "5000", "5,000" or "5000R$", or null. */
+function parseStock(input) {
+  const cleaned = String(input ?? '').trim().replace(/,/g, '').replace(/r\$$/i, '');
+  if (!/^\d+$/.test(cleaned) || !Number.isSafeInteger(Number(cleaned))) return null;
+  return Number(cleaned);
+}
+
+const invalidStockMessage = (command) =>
+  noticeMessage('Invalid Stock', `Use the command \`${command} <stock>\`. Please do a valid integer such as \`24\` or \`1000\`.`);
+
+/** Result of -convert / /convert. */
+function convertMessage(cents) {
+  const robux = Math.floor((cents * ROBUX_PER_7_DOLLARS) / 700);
+  return textMessage(`${formatUsd(cents)} USD converts into **${robux.toLocaleString('en-US')}R$**.`);
+}
+
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
@@ -390,11 +418,11 @@ client.once('clientReady', async () => {
   console.log(`Logged in as ${client.user.tag}`);
   try {
     if (GUILD_ID) {
-      await client.application.commands.set([usdCommand.toJSON()], GUILD_ID);
-      console.log(`Registered /usd in guild ${GUILD_ID}`);
+      await client.application.commands.set(slashCommands, GUILD_ID);
+      console.log(`Registered /usd, /convert, /vault in guild ${GUILD_ID}`);
     } else {
-      await client.application.commands.set([usdCommand.toJSON()]);
-      console.log('Registered /usd globally');
+      await client.application.commands.set(slashCommands);
+      console.log('Registered /usd, /convert, /vault globally');
     }
   } catch (err) {
     console.error('Failed to register slash commands:', err);
@@ -415,14 +443,12 @@ client.on('messageCreate', async (message) => {
 
   if (cmd === VAULT_PREFIX) {
     if (!OWNER_IDS.includes(message.author.id)) return;
-    const cleaned = (rawAmount || '').replace(/,/g, '').replace(/r\$$/i, '');
-    if (!/^\d+$/.test(cleaned) || !Number.isSafeInteger(Number(cleaned))) {
-      await message.reply(
-        noticeMessage('Invalid Stock', `Use the command \`${VAULT_PREFIX} <stock>\`. Please do a valid integer such as \`24\` or \`1000\`.`),
-      );
+    const stock = parseStock(rawAmount);
+    if (stock === null) {
+      await message.reply(invalidStockMessage(VAULT_PREFIX));
       return;
     }
-    await message.channel.send(vaultMessage(Number(cleaned)));
+    await message.channel.send(vaultMessage(stock));
     return;
   }
 
@@ -432,10 +458,7 @@ client.on('messageCreate', async (message) => {
       await message.reply(invalidAmountMessage(CONVERT_PREFIX));
       return;
     }
-    const robux = Math.floor((cents * ROBUX_PER_7_DOLLARS) / 700);
-    await message.channel.send(
-      textMessage(`${formatUsd(cents)} USD converts into **${robux.toLocaleString('en-US')}R$**.`),
-    );
+    await message.channel.send(convertMessage(cents));
     return;
   }
 
@@ -457,6 +480,38 @@ client.on('messageCreate', async (message) => {
 });
 
 client.on('interactionCreate', async (interaction) => {
+  const ephemeral = (reply) => ({ ...reply, flags: reply.flags | MessageFlags.Ephemeral });
+
+  // /convert amount
+  if (interaction.isChatInputCommand() && interaction.commandName === 'convert') {
+    const cents = parseAmountToCents(interaction.options.getString('amount', true), 1, MAX_CENTS);
+    await interaction.reply(cents === null ? ephemeral(invalidAmountMessage('/convert')) : convertMessage(cents));
+    return;
+  }
+
+  // /vault stock (owner only). The panel is sent as a normal channel message, like -vault.
+  if (interaction.isChatInputCommand() && interaction.commandName === 'vault') {
+    if (!OWNER_IDS.includes(interaction.user.id)) {
+      await interaction.reply(ephemeral(noticeMessage('Not Allowed', 'Only the owner can use this command.')));
+      return;
+    }
+    const stock = parseStock(interaction.options.getString('stock', true));
+    if (stock === null) {
+      await interaction.reply(ephemeral(invalidStockMessage('/vault')));
+      return;
+    }
+    try {
+      await interaction.channel.send(vaultMessage(stock));
+      await interaction.reply(ephemeral(noticeMessage('Vault Posted', `The Robux Vault panel is up with **${formatRobux(stock)}** in stock.`)));
+    } catch (err) {
+      console.error('Could not post vault panel:', err);
+      await interaction.reply(
+        ephemeral(noticeMessage('Something went wrong', "Couldn't post the panel here. Check the bot can send messages in this channel.")),
+      );
+    }
+    return;
+  }
+
   // /usd amount
   if (interaction.isChatInputCommand() && interaction.commandName === 'usd') {
     const cents = parseAmountToCents(interaction.options.getString('amount', true));
