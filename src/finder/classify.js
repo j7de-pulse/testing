@@ -52,9 +52,25 @@ const CATEGORY_TERMS = {
 // The server advertises or takes partnerships / ads.
 const ADS_RE = /\bpartner(ship)?s?\b|\badvertis\w*|\bads?\b|\bpromo(tion)?s?\b|\bad\s*channel|\bp\s*ping\b|\bpartner\s*ping\b/;
 
-// Channel names that show a server runs ads: community, advertisements, paid ads.
+// The server sells ads you can buy: paid ads, ad packages / prices, ping ads, ads for Robux...
+const SELLS_ADS_RE = new RegExp(
+  [
+    /\bpaid\s*(?:ads?|advertis\w*|promo\w*|partner\w*)\b/,
+    /\b(?:buy|purchase|order)\s+(?:an?\s+|your\s+)?(?:ads?|advertis\w*|promotions?|pings?)\b/,
+    /\bads?\s+(?:for\s+sale|shop|store|prices?|pricing|packages?|services?|tiers?)\b/,
+    /\badvertis(?:ing|ement)\s+(?:services?|packages?|shop|store|prices?|pricing)\b/,
+    /(?:@?everyone|@?here)\s+ping\s+ads?|\bping\s+ads?\b|\bad\s+pings?\b/,
+    /\bsponsor(?:ed|ships?)?\b|\bpromote\s+your\s+server\b/,
+    /\bads?\s+(?:for|from|at)\s+\d[\d,.]*\s*(?:r\$|robux|\$|usd)|\d[\d,.]*\s*(?:r\$|robux)\s+(?:per\s+|an?\s+|for\s+an?\s+)?ads?\b/,
+  ]
+    .map((re) => re.source)
+    .join('|'),
+);
+
+// Channel names that show a server sells ads: community, advertisements, paid ads, buy ads, ad shop.
 // Decorations are ignored, so "📢・advertisements", "┃paid-ads" and "community-chat" all count.
-const AD_CHANNEL_RE = /(?:^|[^a-z])(?:community|advertisements?|paid[\s_-]*(?:ads?|advertisements?))(?:[^a-z]|$)/;
+const AD_CHANNEL_RE =
+  /(?:^|[^a-z])(?:community|advertisements?|paid[\s_-]*(?:ads?|advertisements?)|buy[\s_-]*ads?|ads?[\s_-]*(?:shop|store|prices?))(?:[^a-z]|$)/;
 
 /** The names in `names` that look like ad channels. */
 function adChannelNames(names) {
@@ -69,7 +85,7 @@ function score(text, terms) {
 
 /**
  * Classify a server from its name, description and ad text.
- * Returns { erlc, erlcScore, category, scores, acceptsAds } where category is
+ * Returns { erlc, erlcScore, category, scores, acceptsAds, sellsAds } where category is
  * 'roleplay' | 'design' | 'misc', or 'unrelated' when nothing ties it to ER:LC.
  */
 function classify(...parts) {
@@ -85,7 +101,7 @@ function classify(...parts) {
     else if (roleplay >= 3 && roleplay > misc) category = 'roleplay';
     else category = 'misc';
   }
-  return { erlc, erlcScore, category, scores, acceptsAds: ADS_RE.test(text) };
+  return { erlc, erlcScore, category, scores, acceptsAds: ADS_RE.test(text), sellsAds: SELLS_ADS_RE.test(text) };
 }
 
 module.exports = { CATEGORIES, adChannelNames, classify, extractInviteCodes, normalize };

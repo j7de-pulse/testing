@@ -24,6 +24,15 @@ test('detects servers that take ads / partnerships', () => {
   assert.ok(!classify('x', 'ERLC RP, daily sessions').acceptsAds);
 });
 
+test('detects servers that sell ads', () => {
+  for (const text of ['Paid ads open!', 'Buy an ad for 200 robux', 'Ad prices in #shop', '@everyone ping ads available', 'Sponsored posts', '100 R$ per ad']) {
+    assert.ok(classify('ERLC Hub', text).sellsAds, text);
+  }
+  for (const text of ['Partnerships open', 'ERLC RP with daily sessions', 'Read the ad rules']) {
+    assert.ok(!classify('ERLC Hub', text).sellsAds, text);
+  }
+});
+
 test('spots community / advertisements / paid ads channels', () => {
   const names = ['general', '📢・advertisements', '┃paid-ads', 'community', 'community-chat', 'paid_advertisement', 'ads-rules', 'communityx', 'unpaid'];
   assert.deepStrictEqual(adChannelNames(names), ['📢・advertisements', '┃paid-ads', 'community', 'community-chat', 'paid_advertisement']);
@@ -36,6 +45,7 @@ test('collects ads from watched channels and searches them', async () => {
     nova: { id: '2', name: 'Nova Designs', description: 'ERLC liveries and uniforms', members: 300 },
     mc: { id: '3', name: 'Block SMP', description: 'Minecraft', members: 5000 },
     hub: { id: '4', name: 'ERLC Central', description: 'ER:LC hub', members: 50, channel: '💸┃paid-ads' },
+    partner: { id: '5', name: 'Partner County RP', description: 'ER:LC roleplay', members: 700 },
   };
   const client = {
     async fetchInvite(code) {
@@ -67,20 +77,27 @@ test('collects ads from watched channels and searches them', async () => {
   });
 
   await finder.handleInteraction(interaction('watch', { channel: { id: 'ads' } }));
-  for (const content of ['ERLC RP - partnerships open discord.gg/staterp', 'Best ERLC designs discord.gg/nova', 'discord.gg/mc', 'discord.gg/dead']) {
+  for (const content of [
+    'ERLC RP - paid ads open, 500 robux per ad discord.gg/staterp',
+    'Best ERLC designs, buy an ad today discord.gg/nova',
+    'ERLC RP, partnerships open discord.gg/partner', // only advertises itself, sells nothing
+    'discord.gg/mc',
+    'discord.gg/dead',
+  ]) {
     finder.handleMessage({ guildId: 'home', channelId: 'ads', id: content, content, embeds: [] });
   }
   finder.handleMessage({ guildId: 'home', channelId: 'other', id: 'x', content: 'discord.gg/ignored', embeds: [] });
 
-  // Let the 2s lookup timer work through the 4 queued invites.
+  // Let the 2s lookup timer work through the 5 queued invites.
   finder.start();
-  await new Promise((r) => setTimeout(r, 2_000 * 4 + 500));
+  await new Promise((r) => setTimeout(r, 2_000 * 5 + 500));
 
   await finder.handleInteraction(interaction('search'));
   const text = JSON.stringify(replies.at(-1));
   assert.match(text, /State Roleplay/);
   assert.match(text, /Nova Designs/);
   assert.doesNotMatch(text, /Block SMP/);
+  assert.doesNotMatch(text, /Partner County RP/);
 
   // The invite points at a paid ads channel, so that channel is recorded.
   await finder.handleInteraction(interaction('add', { invite: 'discord.gg/hub' }));
@@ -99,7 +116,7 @@ test('/find shows 15 servers at a time with a Next 15 button', async () => {
   const client = {
     async fetchInvite(code) {
       const n = Number(code.slice(1));
-      return { guild: { id: String(n), name: `ERLC Roleplay ${n}`, description: 'ER:LC roleplay', vanityURLCode: null, iconURL: () => null }, memberCount: 1000 - n };
+      return { guild: { id: String(n), name: `ERLC Roleplay ${n}`, description: 'ER:LC roleplay, paid ads available', vanityURLCode: null, iconURL: () => null }, memberCount: 1000 - n };
     },
   };
   const finder = createFinder({ client, dataPath });

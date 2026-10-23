@@ -26,7 +26,7 @@ const C = { ACTION_ROW: 1, BUTTON: 2, TEXT: 10, SEPARATOR: 14, CONTAINER: 17 };
 const BUTTON_STYLE = { SECONDARY: 2 };
 
 const CATEGORY_LABELS = { roleplay: 'Roleplay', design: 'Design', misc: 'Misc', unrelated: 'Not ER:LC' };
-const SORTS = { members: 'Most members', recent: 'Most recent ad', ads: 'Most ads seen' };
+const SORTS = { members: 'Most members', recent: 'Most recently active', ads: 'Most ads seen' };
 
 function textMessage(content, extra = []) {
   return {
@@ -54,7 +54,7 @@ function buildCommands() {
   const categoryChoices = [...CATEGORIES, 'all'].map((c) => ({ name: CATEGORY_LABELS[c] ?? 'All', value: c }));
   const find = new SlashCommandBuilder()
     .setName('find')
-    .setDescription(`List ER:LC servers that advertise, ${PAGE_SIZE} at a time`)
+    .setDescription(`List ER:LC servers you can buy an ad in, ${PAGE_SIZE} at a time`)
     .addStringOption((o) => o.setName('category').setDescription('Server type (default: all)').addChoices(...categoryChoices))
     .addStringOption((o) => o.setName('query').setDescription('Name contains...').setMaxLength(40))
     .addIntegerOption((o) => o.setName('min_members').setDescription('Minimum member count').setMinValue(0))
@@ -146,6 +146,7 @@ function createFinder({ client, dataPath, allowedUserIds = [] }) {
       category: server.manualCategory ?? result.category,
       scores: { erlc: result.erlcScore, ...result.scores },
       acceptsAds: result.acceptsAds,
+      sellsAds: result.sellsAds,
     };
   }
 
@@ -236,6 +237,8 @@ function createFinder({ client, dataPath, allowedUserIds = [] }) {
   function start() {
     setInterval(work, RESOLVE_INTERVAL_MS).unref();
     setInterval(recheckStale, RECHECK_SWEEP_MS).unref();
+    // Re-score stored servers so rule changes (like the sells-ads check) apply without waiting for a re-check.
+    for (const server of store.servers) store.upsertServer(server.guildId, reclassify(server));
     recheckStale();
     console.log(`Finder: ${store.servers.length} servers stored, watching ${Object.keys(store.data.watched).length} channels`);
   }
@@ -258,10 +261,10 @@ function createFinder({ client, dataPath, allowedUserIds = [] }) {
     return store.servers.find((s) => s.name?.toLowerCase() === needle) ?? store.servers.find((s) => s.name?.toLowerCase().includes(needle));
   }
 
-  /** Seen in an ad channel, mentions ads / partners, or has a community / advertisements / paid ads channel. */
-  const advertises = (s) => s.adSightings > 0 || s.acceptsAds || s.adChannels?.length > 0;
+  /** You can buy an ad there: it has an ad channel (community, advertisements, paid ads...) or offers paid ads. */
+  const sellsAds = (s) => s.sellsAds || s.adChannels?.length > 0;
 
-  /** ER:LC servers with a live invite that advertise. */
+  /** ER:LC servers with a live invite that sell ads. */
   function search({ category, query, minMembers, sort }) {
     const needle = query?.toLowerCase();
     const sorters = {
@@ -270,7 +273,7 @@ function createFinder({ client, dataPath, allowedUserIds = [] }) {
       ads: (a, b) => (b.adSightings ?? 0) - (a.adSightings ?? 0),
     };
     return store.servers
-      .filter((s) => s.erlc && s.alive !== false && advertises(s))
+      .filter((s) => s.erlc && s.alive !== false && sellsAds(s))
       .filter((s) => category === 'all' || s.category === category)
       .filter((s) => !needle || s.name?.toLowerCase().includes(needle))
       .filter((s) => (s.members ?? 0) >= (minMembers ?? 0))
@@ -278,10 +281,10 @@ function createFinder({ client, dataPath, allowedUserIds = [] }) {
   }
 
   function serverLine(s, n) {
-    const lastAd = s.lastAdAt ? ` · last ad <t:${Math.floor(s.lastAdAt / 1000)}:R>` : '';
     const name = (s.name ?? 'Unknown').slice(0, 50);
+    const where = s.adChannels?.length ? `buy in #${escapeMarkdown(s.adChannels[0].slice(0, 30))}` : 'offers paid ads';
     return (
-      `**${n}. ${escapeMarkdown(name)}** — ${CATEGORY_LABELS[s.category]} · ${fmt(s.members)} members${lastAd}\n` +
+      `**${n}. ${escapeMarkdown(name)}** — ${CATEGORY_LABELS[s.category]} · ${fmt(s.members)} members · ${where}\n` +
       `https://discord.gg/${s.inviteCode}`
     );
   }
@@ -291,7 +294,7 @@ function createFinder({ client, dataPath, allowedUserIds = [] }) {
     const pages = Math.max(1, Math.ceil(results.length / PAGE_SIZE));
     page = Math.min(Math.max(0, page), pages - 1);
     const label = params.category === 'all' ? 'All' : CATEGORY_LABELS[params.category];
-    const header = `# ER:LC ${label} Servers\n-# ${fmt(results.length)} found · ${SORTS[params.sort] ?? SORTS.members} · page ${page + 1}/${pages}`;
+    const header = `# ER:LC ${label} Servers Selling Ads\n-# ${fmt(results.length)} found · ${SORTS[params.sort] ?? SORTS.members} · page ${page + 1}/${pages}`;
     let body = results.length
       ? results.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE).map((s, i) => serverLine(s, page * PAGE_SIZE + i + 1)).join('\n\n')
       : 'No servers match yet. Add ad channels with `/finder watch` or submit one with `/finder add`.';
@@ -319,9 +322,10 @@ function createFinder({ client, dataPath, allowedUserIds = [] }) {
         `- **Category:** ${CATEGORY_LABELS[s.category]}${s.manualCategory ? ' (set by hand)' : ''}\n` +
         `- **Members:** ${fmt(s.members)} (${fmt(s.online)} online)\n` +
         `- **Invite:** https://discord.gg/${s.inviteCode}${s.alive === false ? ' (expired)' : ''}\n` +
-        `- **Advertises:** ${s.adSightings ? `seen in ${fmt(s.adSightings)} ads, last ${ts(s.lastAdAt)}` : 'not seen in an ad channel yet'}\n` +
-        `- **Takes ads / partners:** ${s.acceptsAds ? 'yes' : 'not mentioned'}\n` +
+        `- **Sells ads:** ${sellsAds(s) ? 'yes' : 'not that we can see'}${s.sellsAds ? ' (mentions paid ads)' : ''}\n` +
         `- **Ad channels:** ${s.adChannels?.length ? s.adChannels.map((n) => `#${escapeMarkdown(n)}`).join(', ') : 'none seen'}\n` +
+        `- **Takes partnerships:** ${s.acceptsAds ? 'yes' : 'not mentioned'}\n` +
+        `- **Its own ads:** ${s.adSightings ? `seen ${fmt(s.adSightings)} times, last ${ts(s.lastAdAt)}` : 'none seen'}\n` +
         `- **Scores:** ER:LC ${scores.erlc ?? 0} · roleplay ${scores.roleplay ?? 0} · design ${scores.design ?? 0} · misc ${scores.misc ?? 0}\n` +
         `- **First found:** ${ts(s.firstSeen)} · **Checked:** ${ts(s.lastChecked)}\n` +
         `-# Server ID ${s.guildId}${ad}`,
@@ -329,7 +333,7 @@ function createFinder({ client, dataPath, allowedUserIds = [] }) {
   }
 
   function csv() {
-    const cols = ['guildId', 'name', 'category', 'members', 'online', 'inviteCode', 'alive', 'adSightings', 'acceptsAds', 'adChannels', 'lastAdAt', 'firstSeen', 'description'];
+    const cols = ['guildId', 'name', 'category', 'members', 'online', 'inviteCode', 'alive', 'sellsAds', 'adChannels', 'acceptsAds', 'adSightings', 'lastAdAt', 'firstSeen', 'description'];
     const cell = (col, value) => {
       if (value == null) return '';
       const str = ['lastAdAt', 'firstSeen'].includes(col) ? new Date(value).toISOString() : [].concat(value).join('; ');

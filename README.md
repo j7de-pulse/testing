@@ -15,7 +15,7 @@ Pressing **Confirm** checks the Checkout Session with Stripe; only if Stripe rep
 `paid` does the card change to "Payment Confirmed". Otherwise the user gets a private notice.
 
 ## ER:LC Server Finder
-Finds ER:LC **roleplay**, **design** and **misc** servers that advertise.
+Finds ER:LC **roleplay**, **design** and **misc** servers that **sell ads**, so you can join them and buy one.
 
 **How servers are found**
 1. **Ad channels** – `/finder watch channel:#ads` makes the bot read every new message in an
@@ -30,9 +30,10 @@ Finds ER:LC **roleplay**, **design** and **misc** servers that advertise.
 - The name, description and ad text are scored for ER:LC words (`ERLC`, `ER:LC`, `Liberty County`, `Emergency Response`...)
   and then for roleplay words (roleplay, SSU, sheriff, departments...), design words (designs, liveries, uniforms,
   graphics, commissions, server setups...) or misc words (hub, community, ad server, news...). Fancy fonts like 𝐄𝐑𝐋𝐂 are understood.
-- A server counts as advertising when it was seen in an ad channel, its text mentions ads / partnerships, or it has a
-  channel called **community**, **advertisements** or **paid ads** (emoji and dividers like `📢・advertisements` or
-  `┃paid-ads` are fine). Discord only shows a server's full channel list to bots in that server; for other servers the
+- A server is listed only when you can **buy an ad** there: it has a channel called **community**, **advertisements**,
+  **paid ads**, **buy ads** or **ad shop** (emoji and dividers like `📢・advertisements` or `┃paid-ads` are fine), or its
+  name, description or ads offer paid ads (paid ads, ad prices / packages, ping ads, sponsors, ads for Robux...).
+  Servers that only post their own ads or only take free partnerships are kept but not listed. Discord only shows a server's full channel list to bots in that server; for other servers the
   finder sees just the channel each invite points to.
   Servers with nothing tying them to ER:LC are kept (so they aren't looked up again) but never listed.
 
