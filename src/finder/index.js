@@ -17,6 +17,8 @@ const RESOLVE_INTERVAL_MS = 2_000; // one invite lookup every 2s keeps well unde
 const RECHECK_AFTER_MS = 24 * 60 * 60 * 1000; // refresh member counts / dead invites daily
 const RECHECK_SWEEP_MS = 60 * 60 * 1000;
 const DISCOVER_EVERY_MS = 6 * 60 * 60 * 1000; // look for new ER:LC servers on Roblox every 6 hours
+// Bump to make every bot search Roblox again on its next start (e.g. after fixing how links are read).
+const DISCOVERY_VERSION = 2;
 const PAGE_SIZE = 15;
 const MAX_TEXT = 3900; // Components V2 messages allow 4,000 characters of text in total
 const MAX_SCAN = 1000;
@@ -275,6 +277,7 @@ function createFinder({ client, dataPath, allowedUserIds = [], robloxCookie, dis
         // No invites came back (Roblox down or blocking us): try again in 15 minutes instead of 6 hours.
         store.data.lastDiscoveryAt = report.invites ? Date.now() : Date.now() - DISCOVER_EVERY_MS + 15 * 60 * 1000;
         store.data.lastDiscovery = { ...report, at: Date.now() };
+        store.data.discoveryVersion = DISCOVERY_VERSION;
         store.save();
         console.log('Finder: Roblox search done', JSON.stringify(report));
       })
@@ -289,7 +292,8 @@ function createFinder({ client, dataPath, allowedUserIds = [], robloxCookie, dis
   }
 
   function discoverIfDue() {
-    if (Date.now() - (store.data.lastDiscoveryAt ?? 0) > DISCOVER_EVERY_MS) runDiscovery();
+    const stale = Date.now() - (store.data.lastDiscoveryAt ?? 0) > DISCOVER_EVERY_MS;
+    if (stale || store.data.discoveryVersion !== DISCOVERY_VERSION) runDiscovery();
   }
 
   /** What the last Roblox search found, step by step. */

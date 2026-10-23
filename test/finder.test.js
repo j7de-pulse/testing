@@ -12,7 +12,8 @@ const createFinder = (opts) => realCreateFinder({ discover: async () => ({ group
 
 test('extracts invite codes from ads', () => {
   const ad = 'Join us! discord.gg/LibertyRP and https://discord.com/invite/AbC-12 (again: discord.gg/LibertyRP)';
-  assert.deepStrictEqual(extractInviteCodes(ad), ['libertyrp', 'abc-12']);
+  // Invite codes are case-sensitive: lowercasing "AbC-12" would turn it into a different, invalid invite.
+  assert.deepStrictEqual(extractInviteCodes(ad), ['LibertyRP', 'AbC-12']);
 });
 
 test('classifies ER:LC roleplay, design and misc servers', () => {

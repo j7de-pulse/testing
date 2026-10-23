@@ -3,10 +3,10 @@
 
 const INVITE_RE = /(?:https?:\/\/)?(?:www\.)?(?:discord(?:app)?\.com\/invite|discord\.gg)\/([a-z0-9-]{2,32})/gi;
 
-/** Unique invite codes found in `text`, e.g. "discord.gg/abc" -> ["abc"]. */
+/** Unique invite codes found in `text`, e.g. "discord.gg/AbC" -> ["AbC"]. Codes are case-sensitive, so no lowercasing. */
 function extractInviteCodes(text) {
   const codes = new Set();
-  for (const match of normalize(text).matchAll(INVITE_RE)) codes.add(match[1]);
+  for (const match of String(text ?? '').normalize('NFKC').matchAll(INVITE_RE)) codes.add(match[1]);
   return [...codes];
 }
 
