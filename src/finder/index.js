@@ -16,7 +16,8 @@ const { FinderStore } = require('./store');
 const RESOLVE_INTERVAL_MS = 2_000; // one invite lookup every 2s keeps well under Discord's limits
 const RECHECK_AFTER_MS = 24 * 60 * 60 * 1000; // refresh member counts / dead invites daily
 const RECHECK_SWEEP_MS = 60 * 60 * 1000;
-const PAGE_SIZE = 10;
+const PAGE_SIZE = 15;
+const MAX_TEXT = 3900; // Components V2 messages allow 4,000 characters of text in total
 const MAX_SCAN = 1000;
 const MAX_SOURCES = 25;
 const PAGE_PREFIX = 'finder_page';
@@ -50,25 +51,23 @@ function messageText(message) {
   return parts.filter(Boolean).join('\n');
 }
 
-function buildCommand() {
+function buildCommands() {
   const categoryChoices = [...CATEGORIES, 'all'].map((c) => ({ name: CATEGORY_LABELS[c] ?? 'All', value: c }));
-  return new SlashCommandBuilder()
+  const find = new SlashCommandBuilder()
+    .setName('find')
+    .setDescription(`List ER:LC servers that advertise, ${PAGE_SIZE} at a time`)
+    .addStringOption((o) => o.setName('category').setDescription('Server type (default: all)').addChoices(...categoryChoices))
+    .addStringOption((o) => o.setName('query').setDescription('Name contains...').setMaxLength(40))
+    .addIntegerOption((o) => o.setName('min_members').setDescription('Minimum member count').setMinValue(0))
+    .addStringOption((o) =>
+      o
+        .setName('sort')
+        .setDescription('Sort order (default: most members)')
+        .addChoices(...Object.entries(SORTS).map(([value, name]) => ({ name, value }))),
+    );
+  const finder = new SlashCommandBuilder()
     .setName('finder')
-    .setDescription('Find ER:LC roleplay, design and misc servers that advertise')
-    .addSubcommand((sub) =>
-      sub
-        .setName('search')
-        .setDescription('List ER:LC servers found advertising')
-        .addStringOption((o) => o.setName('category').setDescription('Server type').setRequired(true).addChoices(...categoryChoices))
-        .addStringOption((o) => o.setName('query').setDescription('Name contains...').setMaxLength(40))
-        .addIntegerOption((o) => o.setName('min_members').setDescription('Minimum member count').setMinValue(0))
-        .addStringOption((o) =>
-          o
-            .setName('sort')
-            .setDescription('Sort order (default: most members)')
-            .addChoices(...Object.entries(SORTS).map(([value, name]) => ({ name, value }))),
-        ),
-    )
+    .setDescription('Manage the ER:LC server finder')
     .addSubcommand((sub) =>
       sub
         .setName('info')
@@ -118,8 +117,8 @@ function buildCommand() {
         ),
     )
     .addSubcommand((sub) => sub.setName('export').setDescription('Download every ER:LC server found as CSV (owner only)'))
-    .addSubcommand((sub) => sub.setName('stats').setDescription('Show how many servers have been found'))
-    .toJSON();
+    .addSubcommand((sub) => sub.setName('stats').setDescription('Show how many servers have been found'));
+  return [find.toJSON(), finder.toJSON()];
 }
 
 function createFinder({ client, ownerIds, dataPath }) {
@@ -284,9 +283,9 @@ function createFinder({ client, ownerIds, dataPath }) {
 
   function serverLine(s, n) {
     const lastAd = s.lastAdAt ? ` · last ad <t:${Math.floor(s.lastAdAt / 1000)}:R>` : '';
+    const name = (s.name ?? 'Unknown').slice(0, 50);
     return (
-      `**${n}. ${escapeMarkdown(s.name ?? 'Unknown')}** — ${CATEGORY_LABELS[s.category]}\n` +
-      `${fmt(s.members)} members (${fmt(s.online)} online) · seen in ${fmt(s.adSightings)} ads${lastAd}\n` +
+      `**${n}. ${escapeMarkdown(name)}** — ${CATEGORY_LABELS[s.category]} · ${fmt(s.members)} members${lastAd}\n` +
       `https://discord.gg/${s.inviteCode}`
     );
   }
@@ -297,9 +296,10 @@ function createFinder({ client, ownerIds, dataPath }) {
     page = Math.min(Math.max(0, page), pages - 1);
     const label = params.category === 'all' ? 'All' : CATEGORY_LABELS[params.category];
     const header = `# ER:LC ${label} Servers\n-# ${fmt(results.length)} found · ${SORTS[params.sort] ?? SORTS.members} · page ${page + 1}/${pages}`;
-    const body = results.length
+    let body = results.length
       ? results.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE).map((s, i) => serverLine(s, page * PAGE_SIZE + i + 1)).join('\n\n')
       : 'No servers match yet. Add ad channels with `/finder watch` or submit one with `/finder add`.';
+    if (header.length + body.length > MAX_TEXT) body = `${body.slice(0, MAX_TEXT - header.length - 1)}…`;
 
     const state = [params.category, params.sort ?? 'members', params.minMembers ?? 0, params.query ?? ''].join(':');
     const button = (label, target, disabled) => ({
@@ -309,7 +309,7 @@ function createFinder({ client, ownerIds, dataPath }) {
       custom_id: `${PAGE_PREFIX}:${target}:${state}`.slice(0, 100),
       disabled,
     });
-    const nav = pages > 1 ? [{ type: C.SEPARATOR }, { type: C.ACTION_ROW, components: [button('Prev', page - 1, page === 0), button('Next', page + 1, page >= pages - 1)] }] : [];
+    const nav = pages > 1 ? [{ type: C.SEPARATOR }, { type: C.ACTION_ROW, components: [button(`Previous ${PAGE_SIZE}`, page - 1, page === 0), button(`Next ${PAGE_SIZE}`, page + 1, page >= pages - 1)] }] : [];
     return textMessage(`${header}\n\n${body}`, nav);
   }
 
@@ -368,20 +368,23 @@ function createFinder({ client, ownerIds, dataPath }) {
       await interaction.update(searchMessage({ category, sort, minMembers: Number(minMembers), query: query.join(':') || undefined }, Number(page)));
       return true;
     }
-    if (!interaction.isChatInputCommand() || interaction.commandName !== 'finder') return false;
-
-    const sub = interaction.options.getSubcommand();
+    if (!interaction.isChatInputCommand()) return false;
     const opts = interaction.options;
 
-    if (sub === 'search') {
+    if (interaction.commandName === 'find') {
       const params = {
-        category: opts.getString('category', true),
+        category: opts.getString('category') ?? 'all',
         query: opts.getString('query') ?? undefined,
         minMembers: opts.getInteger('min_members') ?? 0,
         sort: opts.getString('sort') ?? 'members',
       };
       await interaction.reply(ephemeral(searchMessage(params, 0)));
-    } else if (sub === 'info') {
+      return true;
+    }
+    if (interaction.commandName !== 'finder') return false;
+
+    const sub = opts.getSubcommand();
+    if (sub === 'info') {
       const server = findServer(opts.getString('server', true));
       await interaction.reply(server ? ephemeral(infoMessage(server)) : notice('Not Found', 'The finder has no server matching that.'));
     } else if (sub === 'add') {
@@ -463,7 +466,7 @@ function createFinder({ client, ownerIds, dataPath }) {
     return true;
   }
 
-  return { command: buildCommand(), start, handleMessage, handleInteraction };
+  return { commands: buildCommands(), start, handleMessage, handleInteraction };
 }
 
 module.exports = { createFinder };

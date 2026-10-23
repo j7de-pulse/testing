@@ -45,13 +45,13 @@ test('collects ads from watched channels and searches them', async () => {
     },
   };
   const finder = createFinder({ client, ownerIds: ['owner'], dataPath });
-  assert.strictEqual(finder.command.name, 'finder');
+  assert.deepStrictEqual(finder.commands.map((c) => c.name), ['find', 'finder']);
 
   const replies = [];
   const interaction = (sub, values = {}, user = 'owner') => ({
     isButton: () => false,
     isChatInputCommand: () => true,
-    commandName: 'finder',
+    commandName: sub === 'search' ? 'find' : 'finder',
     user: { id: user },
     guildId: 'home',
     memberPermissions: { has: () => false },
@@ -76,7 +76,7 @@ test('collects ads from watched channels and searches them', async () => {
   finder.start();
   await new Promise((r) => setTimeout(r, 2_000 * 4 + 500));
 
-  await finder.handleInteraction(interaction('search', { category: 'all' }));
+  await finder.handleInteraction(interaction('search'));
   const text = JSON.stringify(replies.at(-1));
   assert.match(text, /State Roleplay/);
   assert.match(text, /Nova Designs/);
@@ -92,4 +92,40 @@ test('collects ads from watched channels and searches them', async () => {
   await finder.handleInteraction(interaction('category', { server: 'Nova Designs', category: 'misc' }));
   await finder.handleInteraction(interaction('search', { category: 'misc' }));
   assert.match(JSON.stringify(replies.at(-1)), /Nova Designs/);
+});
+
+test('/find shows 15 servers at a time with a Next 15 button', async () => {
+  const dataPath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'finder-')), 'finder.json');
+  const client = {
+    async fetchInvite(code) {
+      const n = Number(code.slice(1));
+      return { guild: { id: String(n), name: `ERLC Roleplay ${n}`, description: 'ER:LC roleplay', vanityURLCode: null, iconURL: () => null }, memberCount: 1000 - n };
+    },
+  };
+  const finder = createFinder({ client, ownerIds: [], dataPath });
+  let reply;
+  const base = { user: { id: 'u' }, guildId: 'home', isButton: () => false, isChatInputCommand: () => true };
+  for (let n = 1; n <= 20; n++) {
+    await finder.handleInteraction({
+      ...base,
+      commandName: 'finder',
+      options: { getSubcommand: () => 'add', getString: () => `discord.gg/s${n}` },
+      deferReply: async () => {},
+      editReply: async () => {},
+    });
+  }
+
+  await finder.handleInteraction({ ...base, commandName: 'find', options: { getString: () => null, getInteger: () => null }, reply: async (r) => (reply = r) });
+  let text = JSON.stringify(reply);
+  assert.match(text, /20 found/);
+  assert.match(text, /15\. ERLC Roleplay 15\b/);
+  assert.doesNotMatch(text, /ERLC Roleplay 16\b/);
+
+  const next = reply.components[0].components.at(-1).components[1];
+  assert.strictEqual(next.label, 'Next 15');
+  await finder.handleInteraction({ isButton: () => true, customId: next.custom_id, update: async (r) => (reply = r) });
+  text = JSON.stringify(reply);
+  assert.match(text, /16\. ERLC Roleplay 16\b/);
+  assert.match(text, /20\. ERLC Roleplay 20\b/);
+  assert.doesNotMatch(text, /ERLC Roleplay 15\b/);
 });

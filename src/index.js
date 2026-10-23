@@ -417,7 +417,7 @@ const client = new Client({
 });
 
 const finder = createFinder({ client, ownerIds: OWNER_IDS, dataPath: FINDER_DATA_PATH });
-const slashCommands = [...[usdCommand, convertCommand, vaultCommand].map((cmd) => cmd.toJSON()), finder.command];
+const slashCommands = [...[usdCommand, convertCommand, vaultCommand].map((cmd) => cmd.toJSON()), ...finder.commands];
 
 client.once('clientReady', async () => {
   console.log(`Logged in as ${client.user.tag}`);
@@ -425,10 +425,10 @@ client.once('clientReady', async () => {
   try {
     if (GUILD_ID) {
       await client.application.commands.set(slashCommands, GUILD_ID);
-      console.log(`Registered /usd, /convert, /vault, /finder in guild ${GUILD_ID}`);
+      console.log(`Registered /usd, /convert, /vault, /find, /finder in guild ${GUILD_ID}`);
     } else {
       await client.application.commands.set(slashCommands);
-      console.log('Registered /usd, /convert, /vault, /finder globally');
+      console.log('Registered /usd, /convert, /vault, /find, /finder globally');
     }
   } catch (err) {
     console.error('Failed to register slash commands:', err);

@@ -8,7 +8,7 @@ Discord bot that generates a Stripe Checkout link and lets the payer confirm it.
 - `-convert <amount>` / `/convert amount:<amount>` – converts USD to Robux at 1,000 R$ = $7, e.g. `-convert 300` → 42,857R$
 - `-vault <stock>` / `/vault stock:<stock>` – owner only (`OWNER_ID`), posts the Robux Vault panel, e.g. `-vault 24`. **Purchase** opens a form (amounts in steps of 100, 1,000 R$ = $7) and sends a private payment pop-up with **Confirm Payment**. Confirmed purchases are taken off the panel's stock automatically; at 0 the Purchase button is disabled
 
-- `/finder ...` – ER:LC server finder, see below
+- `/find` and `/finder ...` – ER:LC server finder, see below
 
 The bot posts a "Payment Generated" card with a **Pay** link and a **Confirm** button.
 Pressing **Confirm** checks the Checkout Session with Stripe; only if Stripe reports it as
@@ -37,7 +37,8 @@ Finds ER:LC **roleplay**, **design** and **misc** servers that advertise.
   Servers with nothing tying them to ER:LC are kept (so they aren't looked up again) but never listed.
 
 **Commands**
-- `/finder search category:<Roleplay|Design|Misc|All> [query] [min_members] [sort]` – paged list with invites
+- `/find [category] [query] [min_members] [sort]` – lists servers 15 at a time with invites; **Next 15** / **Previous 15**
+  buttons page through the rest. Category defaults to All
 - `/finder info server:<invite, ID or name>` – details, scores and the latest ad
 - `/finder add invite:<invite>` – submit a server
 - `/finder watch|unwatch|scan channel:<channel>` – Manage Server
