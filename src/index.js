@@ -8,6 +8,7 @@ const {
   SlashCommandBuilder,
 } = require('discord.js');
 const Stripe = require('stripe');
+const { createFinder } = require('./finder');
 
 /** Read the first non-empty env var from `names`, stripping whitespace and wrapping quotes. */
 function env(...names) {
@@ -25,6 +26,8 @@ const GUILD_ID = env('GUILD_ID');
 const OWNER_IDS = (env('OWNER_ID', 'OWNER_IDS') || '').split(',').map((id) => id.trim()).filter(Boolean);
 const SUCCESS_URL = env('SUCCESS_URL') || 'https://discord.com/channels/@me';
 const CANCEL_URL = env('CANCEL_URL') || 'https://discord.com/channels/@me';
+// Where the ER:LC server finder keeps its list. Point this at a Railway volume so it survives redeploys.
+const FINDER_DATA_PATH = env('FINDER_DATA_PATH') || 'data/finder.json';
 
 const missing = [
   !DISCORD_TOKEN && 'DISCORD_TOKEN',
@@ -386,7 +389,6 @@ const vaultCommand = new SlashCommandBuilder()
   .setDescription('Post the Robux Vault panel (owner only)')
   .addStringOption((opt) => opt.setName('stock').setDescription('Robux in stock, e.g. 5000').setRequired(true));
 
-const slashCommands = [usdCommand, convertCommand, vaultCommand].map((cmd) => cmd.toJSON());
 
 /** Parse a vault stock amount like "5000", "5,000" or "5000R$", or null. */
 function parseStock(input) {
@@ -414,15 +416,19 @@ const client = new Client({
   partials: [Partials.Channel],
 });
 
+const finder = createFinder({ client, ownerIds: OWNER_IDS, dataPath: FINDER_DATA_PATH });
+const slashCommands = [...[usdCommand, convertCommand, vaultCommand].map((cmd) => cmd.toJSON()), finder.command];
+
 client.once('clientReady', async () => {
   console.log(`Logged in as ${client.user.tag}`);
+  finder.start();
   try {
     if (GUILD_ID) {
       await client.application.commands.set(slashCommands, GUILD_ID);
-      console.log(`Registered /usd, /convert, /vault in guild ${GUILD_ID}`);
+      console.log(`Registered /usd, /convert, /vault, /finder in guild ${GUILD_ID}`);
     } else {
       await client.application.commands.set(slashCommands);
-      console.log('Registered /usd, /convert, /vault globally');
+      console.log('Registered /usd, /convert, /vault, /finder globally');
     }
   } catch (err) {
     console.error('Failed to register slash commands:', err);
@@ -437,6 +443,7 @@ const invalidAmountMessage = (command) =>
 
 // -usd <amount>, -convert <amount>, -vault <stock>
 client.on('messageCreate', async (message) => {
+  finder.handleMessage(message); // ad channels, including ads posted by bots and webhooks
   if (message.author.bot) return;
   const [rawCmd, rawAmount] = message.content.trim().split(/\s+/);
   const cmd = rawCmd?.toLowerCase();
@@ -480,6 +487,7 @@ client.on('messageCreate', async (message) => {
 });
 
 client.on('interactionCreate', async (interaction) => {
+  if (await finder.handleInteraction(interaction)) return;
   const ephemeral = (reply) => ({ ...reply, flags: reply.flags | MessageFlags.Ephemeral });
 
   // /convert amount

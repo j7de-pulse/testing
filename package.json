@@ -5,7 +5,8 @@
   "description": "Discord bot that generates Stripe checkout links with -usd / /usd and confirms payment",
   "main": "src/index.js",
   "scripts": {
-    "start": "node src/index.js"
+    "start": "node src/index.js",
+    "test": "node --test"
   },
   "dependencies": {
     "discord.js": "^14.27.0",
