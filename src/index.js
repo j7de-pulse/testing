@@ -239,6 +239,7 @@ function vaultMessage(stock) {
                 style: BUTTON_STYLE.SUCCESS,
                 label: 'Purchase',
                 custom_id: `${VAULT_PURCHASE_PREFIX}:${stock}`,
+                disabled: stock <= 0,
               },
               {
                 type: C.BUTTON,
@@ -255,10 +256,53 @@ function vaultMessage(stock) {
   };
 }
 
+/** Current stock of a vault panel message, read from its Purchase button (null for old panels). */
+function getPanelStock(message) {
+  const json = JSON.stringify(message.components.map((c) => c.toJSON()));
+  const match = json.match(new RegExp(`"${VAULT_PURCHASE_PREFIX}:(\\d+)"`));
+  return match ? Number(match[1]) : null;
+}
+
+// Stock updates for the same panel run one at a time so two confirmations can't overwrite each other.
+const panelLocks = new Map();
+function withPanelLock(messageId, fn) {
+  const run = (panelLocks.get(messageId) || Promise.resolve()).then(fn, fn);
+  const tail = run.catch(() => {});
+  panelLocks.set(messageId, tail);
+  tail.then(() => panelLocks.get(messageId) === tail && panelLocks.delete(messageId));
+  return run;
+}
+
+// Checkout sessions whose Robux has already been taken off a panel's stock.
+const deductedSessions = new Set();
+
+/** Take a confirmed vault purchase off the stock shown on the panel it was bought from. */
+async function deductVaultStock(session) {
+  const { robux, vault_channel_id: channelId, vault_message_id: messageId, stock_deducted } = session.metadata || {};
+  if (!robux || !channelId || !messageId) return;
+  if (stock_deducted === 'true' || deductedSessions.has(session.id)) return;
+  deductedSessions.add(session.id);
+
+  try {
+    // Remember on the Stripe session too, so a bot restart can't deduct the same purchase twice.
+    await stripe.checkout.sessions.update(session.id, { metadata: { stock_deducted: 'true' } });
+  } catch (err) {
+    console.error('Could not mark Stripe session as deducted:', err);
+  }
+
+  await withPanelLock(messageId, async () => {
+    const channel = await client.channels.fetch(channelId);
+    const panel = await channel.messages.fetch(messageId);
+    const stock = getPanelStock(panel);
+    if (stock === null) return;
+    await panel.edit(vaultMessage(Math.max(0, stock - Number(robux))));
+  });
+}
+
 /** Modal shown when someone presses Purchase on the vault panel. */
-function vaultPurchaseModal(stock) {
+function vaultPurchaseModal(panelMessageId) {
   return {
-    custom_id: `${VAULT_MODAL_PREFIX}:${stock ?? ''}`,
+    custom_id: `${VAULT_MODAL_PREFIX}:${panelMessageId}`,
     title: 'Purchase Robux',
     components: [
       {
@@ -434,8 +478,7 @@ client.on('interactionCreate', async (interaction) => {
 
   // Vault Purchase button: ask how much Robux they want
   if (interaction.isButton() && interaction.customId.split(':')[0] === VAULT_PURCHASE_PREFIX) {
-    const stock = interaction.customId.split(':')[1];
-    await interaction.showModal(vaultPurchaseModal(stock));
+    await interaction.showModal(vaultPurchaseModal(interaction.message.id));
     return;
   }
 
@@ -455,8 +498,9 @@ client.on('interactionCreate', async (interaction) => {
       );
       return;
     }
-    const stock = Number(interaction.customId.split(':')[1]);
-    if (interaction.customId.split(':')[1] && robux > stock) {
+    // Check against the live stock on the panel, which drops as purchases are confirmed
+    const stock = interaction.message ? getPanelStock(interaction.message) : null;
+    if (stock !== null && robux > stock) {
       await interaction.reply(
         ephemeralNotice('Not Enough Stock', `There is only **${formatRobux(stock)}** in stock right now.`),
       );
@@ -468,7 +512,11 @@ client.on('interactionCreate', async (interaction) => {
     try {
       const session = await createCheckout(cents, interaction.user, {
         name: `${formatRobux(robux)} - Robux Vault`,
-        metadata: { robux: String(robux) },
+        metadata: {
+          robux: String(robux),
+          vault_channel_id: interaction.channelId,
+          vault_message_id: interaction.message?.id ?? '',
+        },
       });
       await interaction.editReply(vaultPaymentMessage(robux, cents, session));
     } catch (err) {
@@ -503,6 +551,11 @@ client.on('interactionCreate', async (interaction) => {
     if (session.payment_status === 'paid') {
       await interaction.editReply(confirmedMessage(session, interaction.user));
       await notify('Payment Confirmed', 'Thank you! Your payment has been received.');
+      try {
+        await deductVaultStock(session);
+      } catch (err) {
+        console.error('Could not update vault stock:', err);
+      }
     } else if (session.status === 'expired') {
       await notify('Payment Link Expired', 'This payment link has expired. Please ask for a new one.');
     } else {
