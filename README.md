@@ -22,7 +22,9 @@ Finds ER:LC **roleplay**, **design** and **misc** servers that **sell ads**, so 
    advertisement / partnership channel, including ads posted by bots and webhooks in embeds. `/finder scan` reads
    the channel's older messages too (up to 1,000). Add the bot to ER:LC ad / partnership servers and watch their ad
    channels to grow the list.
-2. **Submissions** – anyone can run `/finder add invite:discord.gg/...`.
+2. **Submissions** – `/finder add` takes one or more links at once (up to 25), e.g. `discord.gg/a discord.gg/b`.
+3. **Automatic** – in every server the bot is in, channels named like ads, advertisements, partners, partnerships,
+   self-promo or paid ads are watched by themselves and their last 500 messages are read once. `/finder unwatch` stops one for good.
 
 **What happens to each invite**
 - It is looked up through Discord's invite API (one every 2 seconds) for the server's name, description,
@@ -42,7 +44,7 @@ Finds ER:LC **roleplay**, **design** and **misc** servers that **sell ads**, so 
 - `/find [category] [query] [min_members] [sort]` – just the Discord links (e.g. `https://discord.gg/pulsecustoms`), 15 at a time; **Next 15** / **Previous 15**
   buttons page through the rest. Category defaults to All
 - `/finder info server:<invite, ID or name>` – details, scores and the latest ad
-- `/finder add invite:<invite>` – submit a server
+- `/finder add invite:<links>` – submit up to 25 servers at once
 - `/finder watch|unwatch|scan channel:<channel>` – choose which channels are read
 - `/finder category server:<...> category:<...>` – fixes a wrong category (`Automatic` undoes it)
 - `/finder export` – CSV of every ER:LC server found

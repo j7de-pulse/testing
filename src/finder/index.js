@@ -9,7 +9,7 @@ const {
   SlashCommandBuilder,
   escapeMarkdown,
 } = require('discord.js');
-const { CATEGORIES, adChannelNames, classify, extractInviteCodes } = require('./classify');
+const { CATEGORIES, adChannelNames, classify, extractInviteCodes, isAdChannelName } = require('./classify');
 const { FinderStore } = require('./store');
 
 const RESOLVE_INTERVAL_MS = 2_000; // one invite lookup every 2s keeps well under Discord's limits
@@ -19,6 +19,8 @@ const PAGE_SIZE = 15;
 const MAX_TEXT = 3900; // Components V2 messages allow 4,000 characters of text in total
 const MAX_SCAN = 1000;
 const MAX_SOURCES = 25;
+const AUTO_SCAN = 500; // messages read from each ad channel the bot finds by itself
+const MAX_ADD = 25;
 const PAGE_PREFIX = 'finder_page';
 const UNKNOWN_INVITE = 10006;
 
@@ -76,8 +78,8 @@ function buildCommands() {
     .addSubcommand((sub) =>
       sub
         .setName('add')
-        .setDescription('Submit a server by invite link')
-        .addStringOption((o) => o.setName('invite').setDescription('e.g. discord.gg/abc123').setRequired(true)),
+        .setDescription(`Submit servers by invite link (up to ${MAX_ADD} at once)`)
+        .addStringOption((o) => o.setName('invite').setDescription('One or more links, e.g. discord.gg/abc discord.gg/xyz').setRequired(true)),
     )
     .addSubcommand((sub) =>
       sub
@@ -234,7 +236,32 @@ function createFinder({ client, dataPath, allowedUserIds = [] }) {
     }
   }
 
+  // Auto-watched channels are scanned one at a time so a big server doesn't flood Discord.
+  let scanChain = Promise.resolve();
+
+  /** Watch (and read the history of) every ad / partner channel in a server the bot is in. */
+  function autoWatch(guild) {
+    for (const channel of guild.channels.cache.values()) {
+      if (![ChannelType.GuildText, ChannelType.GuildAnnouncement].includes(channel.type)) continue;
+      if (!isAdChannelName(channel.name) || store.isIgnored(channel.id)) continue;
+      if (!store.isWatched(channel.id)) store.watch(channel.id, guild.id);
+      if (store.isScanned(channel.id)) continue;
+      scanChain = scanChain.then(async () => {
+        try {
+          const { read, found } = await scan(channel, AUTO_SCAN);
+          store.markScanned(channel.id);
+          console.log(`Finder: auto-scanned #${channel.name} in ${guild.name}: ${read} messages, ${found} invites`);
+        } catch (err) {
+          console.warn(`Finder: can't read #${channel.name} in ${guild.name}: ${err.message}`);
+        }
+      });
+    }
+  }
+
   function start() {
+    for (const guild of client.guilds.cache.values()) autoWatch(guild);
+    client.on('guildCreate', autoWatch);
+    client.on('channelCreate', (channel) => channel.guild && autoWatch(channel.guild));
     setInterval(work, RESOLVE_INTERVAL_MS).unref();
     setInterval(recheckStale, RECHECK_SWEEP_MS).unref();
     // Re-score stored servers so rule changes (like the sells-ads check) apply without waiting for a re-check.
@@ -280,6 +307,22 @@ function createFinder({ client, dataPath, allowedUserIds = [] }) {
       .sort(sorters[sort] ?? sorters.members);
   }
 
+  /** Why /find came back empty, so it's clear whether the finder has no data or everything was filtered out. */
+  function emptyHelp(params) {
+    const erlc = store.servers.filter((s) => s.erlc && s.alive !== false);
+    const selling = erlc.filter(sellsAds).length;
+    const filtered = params.category !== 'all' || params.query || params.minMembers;
+    return (
+      `No links yet. So far the finder has looked up **${fmt(store.servers.length)}** servers: ` +
+      `**${fmt(erlc.length)}** are ER:LC and **${fmt(selling)}** of those sell ads${filtered ? ' (before your filters)' : ''}. ` +
+      `Invites waiting for lookup: **${fmt(queue.size)}**. Watched channels: **${fmt(Object.keys(store.data.watched).length)}**.\n\n` +
+      'The finder only knows servers whose invite links it has seen. Feed it links:\n' +
+      '- Paste links into `/finder add` (up to 25 at once)\n' +
+      '- Use `/finder watch` or `/finder scan` on a channel where server ads are posted\n' +
+      '- Add the bot to ad / partnership servers; it watches their ad channels by itself'
+    );
+  }
+
   function searchMessage(params, page) {
     const results = search(params);
     const pages = Math.max(1, Math.ceil(results.length / PAGE_SIZE));
@@ -288,7 +331,7 @@ function createFinder({ client, dataPath, allowedUserIds = [] }) {
     const header = `# ER:LC ${label} Server Links\n-# ${fmt(results.length)} found · ${SORTS[params.sort] ?? SORTS.members} · page ${page + 1}/${pages}`;
     let body = results.length
       ? results.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE).map((s) => `https://discord.gg/${s.inviteCode}`).join('\n')
-      : 'No servers match yet. Add ad channels with `/finder watch` or submit one with `/finder add`.';
+      : emptyHelp(params);
     if (header.length + body.length > MAX_TEXT) body = `${body.slice(0, MAX_TEXT - header.length - 1)}…`;
 
     const state = [params.category, params.sort ?? 'members', params.minMembers ?? 0, params.query ?? ''].join(':');
@@ -383,23 +426,32 @@ function createFinder({ client, dataPath, allowedUserIds = [] }) {
       const server = findServer(opts.getString('server', true));
       await interaction.reply(server ? ephemeral(infoMessage(server)) : notice('Not Found', 'The finder has no server matching that.'));
     } else if (sub === 'add') {
-      const code = extractInviteCodes(opts.getString('invite', true))[0] ?? opts.getString('invite', true).trim();
-      if (!/^[a-z0-9-]{2,32}$/i.test(code)) {
-        await interaction.reply(notice('Invalid Invite', 'Use a Discord invite such as `discord.gg/abc123`.'));
+      const raw = opts.getString('invite', true);
+      const codes = extractInviteCodes(raw);
+      if (!codes.length && /^[a-z0-9-]{2,32}$/i.test(raw.trim())) codes.push(raw.trim());
+      if (!codes.length) {
+        await interaction.reply(notice('Invalid Invite', 'Use Discord invites such as `discord.gg/abc123`.'));
         return true;
       }
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-      queue.delete(code);
-      try {
-        await resolve(code, [{ adText: '', source: { guildId: interaction.guildId, channelId: 'manual', userId: interaction.user.id }, at: Date.now() }]);
-      } catch (err) {
-        console.error('Finder: manual add failed:', err);
-        await interaction.editReply(textMessage('### Something went wrong\nCould not look that invite up. Try again later.'));
-        return true;
+      const lines = [];
+      for (const code of codes.slice(0, MAX_ADD)) {
+        queue.delete(code);
+        try {
+          await resolve(code, [{ adText: '', source: { guildId: interaction.guildId, channelId: 'manual', userId: interaction.user.id }, at: Date.now() }]);
+        } catch (err) {
+          console.error(`Finder: manual add of ${code} failed:`, err);
+          lines.push(`\`${code}\` — couldn't look it up, try again later`);
+          continue;
+        }
+        const server = store.server(store.invite(code)?.guildId);
+        if (!server) lines.push(`\`${code}\` — expired or invalid`);
+        else if (!server.erlc) lines.push(`https://discord.gg/${server.inviteCode} — not ER:LC related, skipped`);
+        else if (!sellsAds(server)) lines.push(`https://discord.gg/${server.inviteCode} — ER:LC, but no ad selling seen (hidden from /find)`);
+        else lines.push(`https://discord.gg/${server.inviteCode} — added (${CATEGORY_LABELS[server.category]})`);
       }
-      const guildId = store.invite(code)?.guildId;
-      const server = guildId && store.server(guildId);
-      await interaction.editReply(server ? infoMessage(server) : textMessage('### Invalid Invite\nThat invite has expired or does not exist.'));
+      const extra = codes.length > MAX_ADD ? `\n-# Only the first ${MAX_ADD} links were added.` : '';
+      await interaction.editReply(textMessage(`### Added Servers\n${lines.join('\n')}${extra}`.slice(0, MAX_TEXT)));
     } else if (['watch', 'unwatch', 'scan'].includes(sub)) {
       const channel = opts.getChannel('channel', true);
       if (sub === 'watch') {

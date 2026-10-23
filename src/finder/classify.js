@@ -77,6 +77,13 @@ function adChannelNames(names) {
   return names.filter((name) => AD_CHANNEL_RE.test(normalize(name)));
 }
 
+// Channels the bot watches by itself in servers it is in: where people post server ads and invites.
+const AUTO_WATCH_RE =
+  /(?:^|[^a-z])(?:ads?|advertis\w*|partners?(?:hips?)?|paid[\s_-]*ads?|self[\s_-]*promo\w*|promo(?:tions?)?|server[\s_-]*ads?)(?:[^a-z]|$)/;
+
+/** True for channel names like "📢・advertisements", "┃partners" or "self-promo". */
+const isAdChannelName = (name) => AUTO_WATCH_RE.test(normalize(name));
+
 const CATEGORIES = ['roleplay', 'design', 'misc'];
 
 function score(text, terms) {
@@ -104,4 +111,4 @@ function classify(...parts) {
   return { erlc, erlcScore, category, scores, acceptsAds: ADS_RE.test(text), sellsAds: SELLS_ADS_RE.test(text) };
 }
 
-module.exports = { CATEGORIES, adChannelNames, classify, extractInviteCodes, normalize };
+module.exports = { CATEGORIES, adChannelNames, classify, extractInviteCodes, isAdChannelName, normalize };

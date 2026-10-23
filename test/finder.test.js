@@ -3,7 +3,7 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { adChannelNames, classify, extractInviteCodes } = require('../src/finder/classify');
+const { adChannelNames, classify, extractInviteCodes, isAdChannelName } = require('../src/finder/classify');
 const { createFinder } = require('../src/finder');
 
 test('extracts invite codes from ads', () => {
@@ -48,6 +48,8 @@ test('collects ads from watched channels and searches them', async () => {
     partner: { id: '5', name: 'Partner County RP', description: 'ER:LC roleplay', members: 700 },
   };
   const client = {
+    guilds: { cache: new Map() },
+    on() {},
     async fetchInvite(code) {
       const g = guilds[code];
       if (!g) throw Object.assign(new Error('Unknown Invite'), { code: 10006 });
@@ -101,6 +103,7 @@ test('collects ads from watched channels and searches them', async () => {
 
   // The invite points at a paid ads channel, so that channel is recorded.
   await finder.handleInteraction(interaction('add', { invite: 'discord.gg/hub' }));
+  await finder.handleInteraction(interaction('info', { server: 'discord.gg/hub' }));
   assert.match(JSON.stringify(replies.at(-1)), /Ad channels:\*\* #💸┃paid-ads/);
 
   await finder.handleInteraction(interaction('search', { category: 'design' }));
@@ -165,4 +168,67 @@ test('only allowed users can use the finder', async () => {
   assert.match(await run('123'), /Not Allowed/);
   assert.match(await run('737181735846019112'), /ER:LC All Server Links/);
   assert.match(await run('1068719082700029952'), /ER:LC All Server Links/);
+});
+
+test('recognises ad / partner channels to watch automatically', () => {
+  for (const name of ['📢・advertisements', '┃partners', 'partnerships', 'self-promo', 'server-ads', 'paid-ads', 'ads']) assert.ok(isAdChannelName(name), name);
+  for (const name of ['general', 'roads', 'admin-chat', 'downloads']) assert.ok(!isAdChannelName(name), name);
+});
+
+test('watches and reads ad channels in servers the bot is in', async () => {
+  const dataPath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'finder-')), 'finder.json');
+  const messages = new Map([['m1', { id: 'm1', content: 'ERLC Designs | paid ads open https://discord.gg/pulsecustoms', embeds: [] }]]);
+  messages.lastKey = () => 'm1';
+  const fetched = [];
+  const adChannel = {
+    id: 'c1', guildId: 'g1', name: '📢・advertisements', type: 0,
+    messages: { fetch: async ({ before }) => (fetched.push(before), before ? new Map() : messages) },
+  };
+  const general = { id: 'c2', guildId: 'g1', name: 'general', type: 0 };
+  const guild = { id: 'g1', name: 'Ad Hub', channels: { cache: new Map([['c1', adChannel], ['c2', general]]) } };
+  const client = {
+    guilds: { cache: new Map([['g1', guild]]) },
+    on() {},
+    async fetchInvite(code) {
+      return { guild: { id: '9', name: 'Pulse Customs', description: 'ER:LC liveries and designs', vanityURLCode: code, iconURL: () => null }, memberCount: 500 };
+    },
+  };
+  const finder = createFinder({ client, dataPath });
+  finder.start();
+  await new Promise((r) => setTimeout(r, 2_500));
+
+  let reply;
+  await finder.handleInteraction({
+    user: { id: 'u' }, commandName: 'find', isButton: () => false, isChatInputCommand: () => true,
+    options: { getString: () => null, getInteger: () => null }, reply: async (r) => (reply = JSON.stringify(r)),
+  });
+  assert.match(reply, /https:\/\/discord\.gg\/pulsecustoms/);
+});
+
+test('/finder add takes several links at once', async () => {
+  const dataPath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'finder-')), 'finder.json');
+  const guilds = {
+    pulsecustoms: { id: '1', name: 'Pulse Customs', description: 'ER:LC designs, paid ads open' },
+    staterp: { id: '2', name: 'State RP', description: 'ER:LC roleplay' },
+    mc: { id: '3', name: 'Block SMP', description: 'Minecraft' },
+  };
+  const client = {
+    async fetchInvite(code) {
+      const g = guilds[code];
+      if (!g) throw Object.assign(new Error('Unknown Invite'), { code: 10006 });
+      return { guild: { ...g, vanityURLCode: null, iconURL: () => null }, memberCount: 10 };
+    },
+  };
+  const finder = createFinder({ client, dataPath });
+  let reply;
+  await finder.handleInteraction({
+    user: { id: 'u' }, guildId: 'home', commandName: 'finder', isButton: () => false, isChatInputCommand: () => true,
+    options: { getSubcommand: () => 'add', getString: () => 'discord.gg/pulsecustoms discord.gg/staterp https://discord.gg/mc discord.gg/gone' },
+    deferReply: async () => {},
+    editReply: async (r) => (reply = JSON.stringify(r)),
+  });
+  assert.match(reply, /pulsecustoms — added \(Design\)/);
+  assert.match(reply, /staterp — ER:LC, but no ad selling seen/);
+  assert.match(reply, /mc — not ER:LC related/);
+  assert.match(reply, /gone` — expired or invalid/);
 });

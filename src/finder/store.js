@@ -7,7 +7,7 @@ const path = require('node:path');
 class FinderStore {
   constructor(file) {
     this.file = file;
-    this.data = { servers: {}, invites: {}, watched: {} };
+    this.data = { servers: {}, invites: {}, watched: {}, ignored: {} };
     this.saveTimer = null;
     try {
       this.data = { ...this.data, ...JSON.parse(fs.readFileSync(file, 'utf8')) };
@@ -60,15 +60,32 @@ class FinderStore {
   }
 
   watch(channelId, guildId) {
-    this.data.watched[channelId] = { guildId, since: Date.now() };
+    this.data.watched[channelId] = { ...this.data.watched[channelId], guildId, since: Date.now() };
+    delete this.data.ignored[channelId];
     this.save();
   }
 
+  /** Unwatched channels are remembered so auto-watching doesn't pick them up again. */
   unwatch(channelId) {
     const had = this.isWatched(channelId);
     delete this.data.watched[channelId];
+    this.data.ignored[channelId] = true;
     this.save();
     return had;
+  }
+
+  isIgnored(channelId) {
+    return Boolean(this.data.ignored[channelId]);
+  }
+
+  markScanned(channelId) {
+    if (!this.data.watched[channelId]) return;
+    this.data.watched[channelId].scanned = true;
+    this.save();
+  }
+
+  isScanned(channelId) {
+    return Boolean(this.data.watched[channelId]?.scanned);
   }
 
   watchedIn(guildId) {
