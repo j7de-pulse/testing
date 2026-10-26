@@ -12,13 +12,21 @@ const {
 const { CATEGORIES, adChannelNames, classify, extractInviteCodes, isAdChannelName } = require('./classify');
 const { FinderStore } = require('./store');
 const { discoverFromRoblox } = require('./roblox');
+const { discoverFromYouTube } = require('./youtube');
 
-const RESOLVE_INTERVAL_MS = 2_000; // one invite lookup every 2s keeps well under Discord's limits
+/** Every no-setup source in one run. YouTube goes first because it is quick; Roblox can take an hour. */
+async function discoverAll({ onInvite, cookie, youtubeKey, fetchImpl }) {
+  const youtube = youtubeKey ? await discoverFromYouTube({ onInvite, apiKey: youtubeKey, fetchImpl }) : null;
+  const roblox = await discoverFromRoblox({ onInvite, cookie, fetchImpl });
+  return { ...roblox, youtube, invites: roblox.invites + (youtube?.invites ?? 0) };
+}
+
+const RESOLVE_INTERVAL_MS = 1_000; // one invite lookup a second; discord.js waits by itself if Discord says slow down
 const RECHECK_AFTER_MS = 24 * 60 * 60 * 1000; // refresh member counts / dead invites daily
 const RECHECK_SWEEP_MS = 60 * 60 * 1000;
 const DISCOVER_EVERY_MS = 6 * 60 * 60 * 1000; // look for new ER:LC servers on Roblox every 6 hours
 // Bump to make every bot search Roblox again on its next start (e.g. after fixing how links are read).
-const DISCOVERY_VERSION = 2;
+const DISCOVERY_VERSION = 3;
 const PAGE_SIZE = 15;
 const MAX_TEXT = 3900; // Components V2 messages allow 4,000 characters of text in total
 const MAX_SCAN = 1000;
@@ -126,7 +134,7 @@ function buildCommands() {
   return [find.toJSON(), finder.toJSON()];
 }
 
-function createFinder({ client, dataPath, allowedUserIds = [], robloxCookie, discover = discoverFromRoblox, fetchImpl = fetch }) {
+function createFinder({ client, dataPath, allowedUserIds = [], robloxCookie, youtubeKey, discover = discoverAll, fetchImpl = fetch }) {
   const store = new FinderStore(dataPath);
   const queue = new Map(); // invite code -> sightings waiting for the lookup
   let working = false;
@@ -272,7 +280,7 @@ function createFinder({ client, dataPath, allowedUserIds = [], robloxCookie, dis
     if (discovery) return discovery;
     console.log('Finder: searching Roblox for ER:LC servers');
     const onInvite = (code, groupText) => enqueue(code, { groupText, ad: false, source: { type: 'roblox' }, at: Date.now() });
-    discovery = discover({ onInvite, cookie: robloxCookie, fetchImpl })
+    discovery = discover({ onInvite, cookie: robloxCookie, youtubeKey, fetchImpl })
       .then((report) => {
         // No invites came back (Roblox down or blocking us): try again in 15 minutes instead of 6 hours.
         store.data.lastDiscoveryAt = report.invites ? Date.now() : Date.now() - DISCOVER_EVERY_MS + 15 * 60 * 1000;
@@ -306,9 +314,13 @@ function createFinder({ client, dataPath, allowedUserIds = [], robloxCookie, dis
     if (r.error) return `**Roblox search** ${when}: failed — \`${r.error}\``;
     return (
       `**Roblox search** ${when}, ${account}:\n` +
-      `- Groups found: **${fmt(r.groups)}**${r.searchErrors ? ` (${fmt(r.searchErrors)} searches failed: \`${r.searchError}\`)` : ''}\n` +
+      `- Groups checked: **${fmt(r.groups)}**, **${fmt(r.allies)}** of them found through allies` +
+      `${r.searchErrors ? ` (${fmt(r.searchErrors)} searches failed: \`${r.searchError}\`)` : ''}\n` +
       `- Discord links read: **${fmt(r.linksOk)}** groups ok, **${fmt(r.linksFailed)}** failed${r.linkError ? ` (\`${r.linkError}\`)` : ''}\n` +
-      `- Discord invites found: **${fmt(r.invites)}**`
+      `- Discord invites found: **${fmt(r.invites)}**\n` +
+      (r.youtube
+        ? `**YouTube:** ${fmt(r.youtube.videos)} videos read, ${fmt(r.youtube.invites)} invites${r.youtube.error ? ` (\`${r.youtube.error}\`)` : ''}`
+        : `**YouTube:** ${youtubeKey ? 'waiting for the next run' : 'off (no YOUTUBE_API_KEY)'}`)
     );
   }
 

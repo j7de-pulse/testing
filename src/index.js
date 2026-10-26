@@ -31,6 +31,8 @@ const FINDER_DATA_PATH = env('FINDER_DATA_PATH') || 'data/finder.json';
 // Discord user IDs allowed to use /find and /finder (comma-separated)
 // Roblox account cookie (.ROBLOSECURITY) so the finder can read the Discord links on Roblox groups. Use an alt account.
 const ROBLOX_COOKIE = env('ROBLOX_COOKIE')?.replace(/^\.ROBLOSECURITY=/, '');
+// Optional YouTube Data API key: the finder also reads Discord links from ER:LC video descriptions.
+const YOUTUBE_API_KEY = env('YOUTUBE_API_KEY');
 const FINDER_USER_IDS = (env('FINDER_USER_IDS') || '1068719082700029952,737181735846019112')
   .split(',')
   .map((id) => id.trim())
@@ -423,7 +425,7 @@ const client = new Client({
   partials: [Partials.Channel],
 });
 
-const finder = createFinder({ client, dataPath: FINDER_DATA_PATH, allowedUserIds: FINDER_USER_IDS, robloxCookie: ROBLOX_COOKIE });
+const finder = createFinder({ client, dataPath: FINDER_DATA_PATH, allowedUserIds: FINDER_USER_IDS, robloxCookie: ROBLOX_COOKIE, youtubeKey: YOUTUBE_API_KEY });
 const slashCommands = [...[usdCommand, convertCommand, vaultCommand].map((cmd) => cmd.toJSON()), ...finder.commands];
 
 client.once('clientReady', async () => {

@@ -247,6 +247,9 @@ test('finds ER:LC Discord links from Roblox groups with no setup', async () => {
         : { data: [{ id: 1, name: 'Pulse Customs', description: 'ERLC liveries' }] },
     'groups/1/social-links': () => ({ data: [{ type: 'Discord', url: 'https://discord.gg/pulsecustoms' }] }),
     'groups/2/social-links': () => ({ data: [] }),
+    'groups/3/social-links': () => ({ data: [{ type: 'Discord', url: 'https://discord.gg/AllyRP' }] }),
+    'groups/1/relationships/allies': () => ({ relatedGroups: [{ id: 3, name: 'Ally County RP', description: 'ERLC roleplay' }, { id: 2, name: 'State RP' }] }),
+    'relationships/allies': () => ({ relatedGroups: [] }),
   };
   const cookies = [];
   const fetchImpl = async (url, { headers }) => {
@@ -259,11 +262,32 @@ test('finds ER:LC Discord links from Roblox groups with no setup', async () => {
   global.setTimeout = (fn) => (fn(), 0); // skip the polite delays between requests
   try {
     const result = await discoverFromRoblox({ fetchImpl, cookie: 'abc', onInvite: (code, text) => found.push([code, text]) });
-    assert.deepStrictEqual(result, { groups: 2, invites: 2, searchErrors: 0, searchError: null, linksOk: 2, linksFailed: 0, linkError: null });
+    assert.deepStrictEqual(result, { groups: 3, allies: 1, invites: 3, searchErrors: 0, searchError: null, linksOk: 3, linksFailed: 0, linkError: null });
   } finally {
     global.setTimeout = realSetTimeout;
   }
-  assert.deepStrictEqual(found.map(([code]) => code).sort(), ['pulsecustoms', 'staterp']);
+  // AllyRP was only reachable through Pulse Customs' allies, and keeps its capital letters.
+  assert.deepStrictEqual(found.map(([code]) => code).sort(), ['AllyRP', 'pulsecustoms', 'staterp']);
   assert.ok(cookies.every((c) => c === '.ROBLOSECURITY=abc'));
   assert.match(found.find(([code]) => code === 'pulsecustoms')[1], /ERLC liveries/);
+});
+
+test('reads Discord links from ER:LC YouTube video descriptions', async () => {
+  const { discoverFromYouTube } = require('../src/finder/youtube');
+  const fetchImpl = async (url) => ({
+    ok: true,
+    json: async () =>
+      url.includes('/search?')
+        ? { items: [{ id: { videoId: 'v1' } }, { id: { videoId: 'v2' } }] }
+        : {
+            items: [
+              { snippet: { title: 'ERLC SSU', channelTitle: 'Coastal RP', description: 'Join: https://discord.gg/CoastalRP' } },
+              { snippet: { title: 'ERLC liveries', channelTitle: 'Pulse', description: 'no link here' } },
+            ],
+          },
+  });
+  const found = [];
+  const report = await discoverFromYouTube({ apiKey: 'k', fetchImpl, onInvite: (code) => found.push(code) });
+  assert.deepStrictEqual(found, ['CoastalRP']);
+  assert.strictEqual(report.videos, 2);
 });
