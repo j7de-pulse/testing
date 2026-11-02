@@ -84,7 +84,13 @@ test('/find pages 15 at a time', async () => {
 });
 
 test('reads listing sites and checks every invite on Discord', async () => {
-  const source = { name: 'Test Site', fetch: async () => [{ invite: 'https://discord.gg/m2500', members: 2400 }, { invite: 'discord.gg/m50', members: 50 }, { invite: 'discord.gg/dead' }] };
+  const source = {
+    name: 'Test Site',
+    run: async ({ onServer }) => {
+      for (const entry of [{ invite: 'https://discord.gg/m2500', members: 2400 }, { invite: 'discord.gg/m50', members: 50 }, { invite: 'discord.gg/dead' }]) onServer(entry);
+      return { listed: 3 };
+    },
+  };
   const finder = createFinder({ client: fakeClient(), dataPath: tempPath(), sources: [source] });
   finder.start();
   await new Promise((r) => setTimeout(r, 2_500));
@@ -106,4 +112,50 @@ test('only allowed users can use the finder', async () => {
   const finder = createFinder({ client: fakeClient(), dataPath: tempPath(), sources: [], allowedUserIds: ['1068719082700029952'] });
   assert.match(await command(finder, 'find', { user: '123' }), /Not Allowed/);
   assert.match(await command(finder, 'find', { user: '1068719082700029952' }), /ER:LC Servers/);
+});
+
+test('reads Melonly server records from listing and server pages', () => {
+  const { parseMelonly } = require('../src/finder/sources');
+  // Layouts copied from melonly.com: the /servers listing, and a server's own page.
+  const listing = String.raw`{"server":{"id":"7135971778748223488","content":{"name":"Jakarta City Roleplay","socials":[{"type":1,"value":"HgK5ASCURB"},{"type":2,"value":"jkc.roleplay.erlc"}],"joinCode":"jkcrp","discordMembers":1938,"erlcPlayercount":0},"createdAt":1,"verified":null,"urlValue":"jakarta-city-roleplay","promoted":false},"rating":4.9},{"server":{"id":"7195145349101522944","content":{"name":"LA","socials":[{"type":4,"value":"32540001/LOSRPC"}],"discordMembers":10},"urlValue":"la"}}`;
+  const page = String.raw`["$","$L61",null,{"server":{"id":"7135971778748223488","serverId":"7135603082343223296","createdAt":1,"content":{"name":"Idaho","socials":[{"type":0,"value":"yt"},{"type":1,"value":"idaho"}],"description":"say \"hi\"","discordMembers":8751},"urlValue":"idaho-state-roleplay-5"}}]`;
+  assert.deepStrictEqual(parseMelonly(listing), [{ slug: 'jakarta-city-roleplay', invite: 'HgK5ASCURB', members: 1938 }]);
+  assert.deepStrictEqual(parseMelonly(page), [{ slug: 'idaho-state-roleplay-5', invite: 'idaho', members: 8751 }]);
+});
+
+test('reads aderlc.xyz pages, member counts and invite redirects', async () => {
+  const { SOURCES } = require('../src/finder/sources');
+  const aderlc = SOURCES.find((s) => s.name === 'aderlc.xyz');
+  const pages = { 1: ['8', '268', '943'], 2: ['12'], 3: ['12'] }; // a page past the end repeats the last page
+  const counts = { 8: 3789, 268: 390, 943: null, 12: 40 };
+  const invites = { 8: 'https://discord.gg/yzd9f97hem', 268: 'https://discord.gg/7X57KSzZAw', 943: 'https://discord.gg/wxrldz', 12: 'https://discord.gg/small' };
+  const requested = [];
+  const fetchImpl = async (url, opts) => {
+    requested.push(url);
+    const page = url.match(/discovery\?page=(\d+)/);
+    if (page) return new Response((pages[page[1]] ?? pages[3]).map((id) => `<a href="/discovery/${id}" class="x">`).join(''));
+    if (url.includes('member-counts')) {
+      const ids = new URL(url).searchParams.get('listing_ids').split(',');
+      return Response.json({ listings: Object.fromEntries(ids.map((id) => [id, counts[id]])) });
+    }
+    const id = url.match(/discovery\/(\d+)\/invite/)[1];
+    assert.strictEqual(opts.redirect, 'manual');
+    return new Response(null, { status: 302, headers: { location: invites[id] } });
+  };
+  const found = [];
+  const realSetTimeout = global.setTimeout;
+  global.setTimeout = (fn) => (fn(), 0); // skip the polite gaps between requests
+  let result;
+  try {
+    result = await aderlc.run({ fetchImpl, onServer: (e) => found.push(e), state: {}, save() {} });
+  } finally {
+    global.setTimeout = realSetTimeout;
+  }
+  assert.deepStrictEqual(result, { listed: 4 });
+  assert.deepStrictEqual(found, [
+    { invite: 'https://discord.gg/yzd9f97hem', members: 3789 },
+    { invite: 'https://discord.gg/7X57KSzZAw', members: 390 },
+    { invite: 'https://discord.gg/wxrldz', members: null },
+  ]);
+  assert.ok(!requested.some((u) => u.includes('/discovery/12/invite')), 'a 40-member server is not followed');
 });

@@ -17,9 +17,14 @@ Pressing **Confirm** checks the Checkout Session with Stripe; only if Stripe rep
 ## ER:LC Server Finder
 Lists ER:LC Discord servers with **300+ members**, grouped by size: **300+**, **1,000+**, **5,000+** and **10,000+**.
 
-Servers come from ER:LC listing sites (`src/finder/sources.js`), read every 6 hours. Every invite is checked
-through Discord's invite API, so member counts are Discord's own and expired invites are dropped. Servers are
-re-checked daily.
+Servers come from two ER:LC listing sites (`src/finder/sources.js`), read every 6 hours:
+- **aderlc.xyz** – every page of `/discovery`, with each listing's Join link followed to its Discord invite
+- **melonly.com** – the featured servers on `/servers`, then every server page in its sitemap (~7,000, one every
+  1.5 seconds, so the first full read takes about 3 hours; later reads only open new pages and re-read each page
+  every 2 weeks). Melonly's `/api/` is never used, as its `robots.txt` asks
+
+Every invite is checked through Discord's invite API, so member counts are Discord's own and expired invites are
+dropped. Servers are re-checked daily.
 
 **Commands** (only the users in `FINDER_USER_IDS` can use them; by default `1068719082700029952` and
 `737181735846019112`)

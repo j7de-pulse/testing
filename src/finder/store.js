@@ -10,7 +10,7 @@ const VERSION = 2;
 class FinderStore {
   constructor(file) {
     this.file = file;
-    this.data = { version: VERSION, servers: {}, invites: {}, sources: {} };
+    this.data = { version: VERSION, servers: {}, invites: {}, sources: {}, sourceState: {} };
     this.saveTimer = null;
     try {
       const saved = JSON.parse(fs.readFileSync(file, 'utf8'));

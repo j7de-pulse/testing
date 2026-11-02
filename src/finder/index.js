@@ -16,7 +16,7 @@ const TIERS = [
 ];
 const RESOLVE_INTERVAL_MS = 1_000; // one invite lookup a second; discord.js waits by itself if Discord says slow down
 const RECHECK_AFTER_MS = 24 * 60 * 60 * 1000; // refresh member counts / dead invites daily
-const SOURCES_EVERY_MS = 6 * 60 * 60 * 1000; // read the listing sites every 6 hours
+const SOURCES_EVERY_MS = 6 * 60 * 60 * 1000; // read the listing sites every 6 hours (Melonly only re-reads new pages)
 const PAGE_SIZE = 15;
 const MAX_TEXT = 3900; // Components V2 messages allow 4,000 characters of text in total
 const MAX_ADD = 25;
@@ -135,28 +135,32 @@ function createFinder({ client, dataPath, allowedUserIds = [], sources = SOURCES
     if (!queue.has(code)) queue.set(code, { source });
   }
 
-  /** Read every listing site and queue the invites it lists. */
+  const live = {}; // source name -> invites queued so far by the run in progress
+
+  /** Read every listing site, queueing invites as they are found. */
   function readSources() {
     if (reading) return reading;
     reading = (async () => {
       for (const source of sources) {
-        try {
-          const listed = await source.fetch({ fetchImpl });
-          let invites = 0;
-          for (const entry of listed) {
-            // Sites' member counts can be stale, so they only skip clearly small servers; Discord's count decides.
-            if (entry.members != null && entry.members < MIN_MEMBERS / 2) continue;
-            for (const code of extractInviteCodes(entry.invite)) {
-              invites++;
-              enqueue(code, source.name);
-            }
+        live[source.name] = 0;
+        const onServer = ({ invite, members }) => {
+          // Sites' member counts can be stale, so they only skip clearly small servers; Discord's count decides.
+          if (members != null && members < MIN_MEMBERS / 2) return;
+          for (const code of extractInviteCodes(invite)) {
+            live[source.name]++;
+            enqueue(code, source.name);
           }
-          store.setSourceReport(source.name, { listed: listed.length, invites });
-          console.log(`Finder: ${source.name} listed ${listed.length} servers, ${invites} invites queued`);
+        };
+        store.data.sourceState[source.name] ??= {};
+        try {
+          const { listed } = await source.run({ fetchImpl, onServer, state: store.data.sourceState[source.name], save: () => store.save() });
+          store.setSourceReport(source.name, { listed, invites: live[source.name] });
+          console.log(`Finder: ${source.name} listed ${listed} servers, ${live[source.name]} invites queued`);
         } catch (err) {
-          store.setSourceReport(source.name, { error: err.message });
+          store.setSourceReport(source.name, { error: err.message, invites: live[source.name] });
           console.error(`Finder: reading ${source.name} failed:`, err);
         }
+        delete live[source.name];
       }
       store.data.lastSourcesAt = Date.now();
       store.save();
@@ -250,6 +254,7 @@ function createFinder({ client, dataPath, allowedUserIds = [], sources = SOURCES
     const sourceLines = sources
       .map(({ name }) => {
         const r = store.data.sources[name];
+        if (name in live) return `- **${name}:** reading now, ${fmt(live[name])} invites found so far`;
         if (!r) return `- **${name}:** not read yet`;
         const when = `<t:${Math.floor(r.at / 1000)}:R>`;
         return r.error ? `- **${name}** ${when}: failed — \`${r.error}\`` : `- **${name}** ${when}: ${fmt(r.listed)} servers listed, ${fmt(r.invites)} invites`;
