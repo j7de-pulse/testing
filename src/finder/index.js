@@ -1,46 +1,38 @@
-// ER:LC server finder: collects Discord invites from advertisement / partnership channels
-// the bot can read (plus manual submissions), looks each one up through Discord's invite API
-// and sorts ER:LC servers into roleplay, design and misc.
+// ER:LC server finder: collects ER:LC Discord servers from listing sites (see ./sources.js),
+// checks each invite through Discord's invite API, and lists servers with 300+ members
+// grouped by size: 300+, 1,000+, 5,000+ and 10,000+.
 
-const {
-  AttachmentBuilder,
-  ChannelType,
-  MessageFlags,
-  SlashCommandBuilder,
-  escapeMarkdown,
-} = require('discord.js');
-const { CATEGORIES, adChannelNames, classify, extractInviteCodes, isAdChannelName } = require('./classify');
+const { AttachmentBuilder, MessageFlags, SlashCommandBuilder, escapeMarkdown } = require('discord.js');
 const { FinderStore } = require('./store');
-const { discoverFromRoblox } = require('./roblox');
-const { discoverFromYouTube } = require('./youtube');
+const { SOURCES } = require('./sources');
 
-/** Every no-setup source in one run. YouTube goes first because it is quick; Roblox can take an hour. */
-async function discoverAll({ onInvite, cookie, youtubeKey, fetchImpl }) {
-  const youtube = youtubeKey ? await discoverFromYouTube({ onInvite, apiKey: youtubeKey, fetchImpl }) : null;
-  const roblox = await discoverFromRoblox({ onInvite, cookie, fetchImpl });
-  return { ...roblox, youtube, invites: roblox.invites + (youtube?.invites ?? 0) };
-}
-
+const MIN_MEMBERS = 300;
+// Biggest first: a server goes in the first tier it reaches.
+const TIERS = [
+  { min: 10_000, label: '10,000+' },
+  { min: 5_000, label: '5,000+' },
+  { min: 1_000, label: '1,000+' },
+  { min: 300, label: '300+' },
+];
 const RESOLVE_INTERVAL_MS = 1_000; // one invite lookup a second; discord.js waits by itself if Discord says slow down
 const RECHECK_AFTER_MS = 24 * 60 * 60 * 1000; // refresh member counts / dead invites daily
-const RECHECK_SWEEP_MS = 60 * 60 * 1000;
-const DISCOVER_EVERY_MS = 6 * 60 * 60 * 1000; // look for new ER:LC servers on Roblox every 6 hours
-// Bump to make every bot search Roblox again on its next start (e.g. after fixing how links are read).
-const DISCOVERY_VERSION = 3;
+const SOURCES_EVERY_MS = 6 * 60 * 60 * 1000; // read the listing sites every 6 hours
 const PAGE_SIZE = 15;
 const MAX_TEXT = 3900; // Components V2 messages allow 4,000 characters of text in total
-const MAX_SCAN = 1000;
-const MAX_SOURCES = 25;
-const AUTO_SCAN = 500; // messages read from each ad channel the bot finds by itself
 const MAX_ADD = 25;
 const PAGE_PREFIX = 'finder_page';
 const UNKNOWN_INVITE = 10006;
+const INVITE_RE = /(?:https?:\/\/)?(?:www\.)?(?:discord(?:app)?\.com\/invite|discord\.gg)\/([a-z0-9-]{2,32})/gi;
 
 const C = { ACTION_ROW: 1, BUTTON: 2, TEXT: 10, SEPARATOR: 14, CONTAINER: 17 };
 const BUTTON_STYLE = { SECONDARY: 2 };
 
-const CATEGORY_LABELS = { roleplay: 'Roleplay', design: 'Design', misc: 'Misc', unrelated: 'Not ER:LC' };
-const SORTS = { members: 'Most members', recent: 'Most recently active', ads: 'Most ads seen' };
+/** Unique invite codes in `text`. Codes are case-sensitive, so they are never lowercased. */
+function extractInviteCodes(text) {
+  return [...new Set([...String(text ?? '').matchAll(INVITE_RE)].map((m) => m[1]))];
+}
+
+const tierOf = (members) => TIERS.find((t) => members >= t.min);
 
 function textMessage(content, extra = []) {
   return {
@@ -54,189 +46,75 @@ const ephemeral = (reply) => ({ ...reply, flags: (reply.flags ?? 0) | MessageFla
 const notice = (title, body) => ephemeral(textMessage(`### ${title}\n${body}`));
 const fmt = (n) => (n ?? 0).toLocaleString('en-US');
 
-/** All text in a message that could hold an ad: content plus embed text (ad bots use embeds). */
-function messageText(message) {
-  const parts = [message.content];
-  for (const embed of message.embeds ?? []) {
-    parts.push(embed.title, embed.description, embed.url, embed.author?.name, embed.footer?.text);
-    for (const field of embed.fields ?? []) parts.push(field.name, field.value);
-  }
-  return parts.filter(Boolean).join('\n');
-}
-
 function buildCommands() {
-  const categoryChoices = [...CATEGORIES, 'all'].map((c) => ({ name: CATEGORY_LABELS[c] ?? 'All', value: c }));
   const find = new SlashCommandBuilder()
     .setName('find')
-    .setDescription(`Get Discord links to ER:LC servers, ${PAGE_SIZE} at a time`)
-    .addStringOption((o) => o.setName('category').setDescription('Server type (default: all)').addChoices(...categoryChoices))
-    .addStringOption((o) => o.setName('query').setDescription('Name contains...').setMaxLength(40))
-    .addIntegerOption((o) => o.setName('min_members').setDescription('Minimum member count').setMinValue(0))
-    .addStringOption((o) =>
+    .setDescription(`Get Discord links to ER:LC servers with ${MIN_MEMBERS}+ members, ${PAGE_SIZE} at a time`)
+    .addIntegerOption((o) =>
       o
-        .setName('sort')
-        .setDescription('Sort order (default: most members)')
-        .addChoices(...Object.entries(SORTS).map(([value, name]) => ({ name, value }))),
+        .setName('size')
+        .setDescription('Only servers at least this big (default: all 300+)')
+        .addChoices(...TIERS.map((t) => ({ name: `${t.label} members`, value: t.min }))),
     );
   const finder = new SlashCommandBuilder()
     .setName('finder')
     .setDescription('Manage the ER:LC server finder')
     .addSubcommand((sub) =>
       sub
-        .setName('info')
-        .setDescription('Show what the finder knows about a server')
-        .addStringOption((o) => o.setName('server').setDescription('Invite link, server ID or name').setRequired(true)),
-    )
-    .addSubcommand((sub) =>
-      sub
         .setName('add')
-        .setDescription(`Submit servers by invite link (up to ${MAX_ADD} at once)`)
+        .setDescription(`Add ER:LC servers by invite link (up to ${MAX_ADD} at once)`)
         .addStringOption((o) => o.setName('invite').setDescription('One or more links, e.g. discord.gg/abc discord.gg/xyz').setRequired(true)),
     )
-    .addSubcommand((sub) =>
-      sub
-        .setName('watch')
-        .setDescription('Collect invites from an ad / partnership channel')
-        .addChannelOption((o) =>
-          o.setName('channel').setDescription('Ad channel').setRequired(true).addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement),
-        ),
-    )
-    .addSubcommand((sub) =>
-      sub
-        .setName('unwatch')
-        .setDescription('Stop collecting invites from a channel')
-        .addChannelOption((o) => o.setName('channel').setDescription('Ad channel').setRequired(true)),
-    )
-    .addSubcommand((sub) =>
-      sub
-        .setName('scan')
-        .setDescription("Collect invites from a channel's past messages")
-        .addChannelOption((o) =>
-          o.setName('channel').setDescription('Ad channel').setRequired(true).addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement),
-        )
-        .addIntegerOption((o) => o.setName('limit').setDescription(`Messages to read (default 500, max ${MAX_SCAN})`).setMinValue(1).setMaxValue(MAX_SCAN)),
-    )
-    .addSubcommand((sub) =>
-      sub
-        .setName('category')
-        .setDescription('Fix a server\'s category by hand')
-        .addStringOption((o) => o.setName('server').setDescription('Invite link, server ID or name').setRequired(true))
-        .addStringOption((o) =>
-          o
-            .setName('category')
-            .setDescription('New category')
-            .setRequired(true)
-            .addChoices(...[...CATEGORIES, 'unrelated', 'auto'].map((c) => ({ name: CATEGORY_LABELS[c] ?? 'Automatic', value: c }))),
-        ),
-    )
-    .addSubcommand((sub) => sub.setName('export').setDescription('Download every ER:LC server found as CSV'))
+    .addSubcommand((sub) => sub.setName('export').setDescription('Download every server found as CSV'))
     .addSubcommand((sub) => sub.setName('stats').setDescription('Show how many servers have been found'));
   return [find.toJSON(), finder.toJSON()];
 }
 
-function createFinder({ client, dataPath, allowedUserIds = [], robloxCookie, youtubeKey, discover = discoverAll, fetchImpl = fetch }) {
+function createFinder({ client, dataPath, allowedUserIds = [], sources = SOURCES, fetchImpl = fetch }) {
   const store = new FinderStore(dataPath);
-  const queue = new Map(); // invite code -> sightings waiting for the lookup
+  const queue = new Map(); // invite code -> { source } waiting for the lookup
   let working = false;
+  let reading = null; // the running read of the listing sites
 
-
-  /** Queue invite codes from an ad. `sighting` is null for a plain re-check. */
-  function enqueue(code, sighting) {
-    const pending = queue.get(code) ?? [];
-    if (sighting) pending.push(sighting);
-    queue.set(code, pending);
-  }
-
-  function intake(text, source) {
-    const codes = extractInviteCodes(text);
-    for (const code of codes) enqueue(code, { adText: text.slice(0, 1500), source, at: Date.now() });
-    return codes.length;
-  }
-
-  function reclassify(server) {
-    const result = classify(server.name, server.description, server.adText, server.groupText);
-    return {
-      erlc: server.manualCategory ? server.manualCategory !== 'unrelated' : result.erlc,
-      category: server.manualCategory ?? result.category,
-      scores: { erlc: result.erlcScore, ...result.scores },
-      acceptsAds: result.acceptsAds,
-      sellsAds: result.sellsAds,
-    };
-  }
-
-  async function resolve(code, sightings) {
+  /** Look an invite up on Discord and store the server with its real member count. */
+  async function resolve(code, source) {
     const now = Date.now();
-    const cached = store.invite(code);
-    let guildId = cached?.guildId;
-
-    if (!cached || now - cached.checkedAt > RECHECK_AFTER_MS || !sightings.length) {
-      let invite;
-      try {
-        invite = await client.fetchInvite(code, { withCounts: true });
-      } catch (err) {
-        if (err.code !== UNKNOWN_INVITE) throw err;
-        store.setInvite(code, null);
-        for (const server of store.servers) {
-          if (server.inviteCode === code) store.upsertServer(server.guildId, { alive: false, lastChecked: now });
-        }
-        return;
+    let invite;
+    try {
+      invite = await client.fetchInvite(code, { withCounts: true });
+    } catch (err) {
+      if (err.code !== UNKNOWN_INVITE) throw err;
+      store.setInvite(code, null);
+      for (const server of store.servers) {
+        if (server.inviteCode === code) store.upsertServer(server.guildId, { alive: false, lastChecked: now });
       }
-      if (!invite.guild) {
-        store.setInvite(code, null); // group DM invite
-        return;
-      }
-      guildId = invite.guild.id;
-      store.setInvite(code, guildId);
-      const existing = store.server(guildId);
-      // A bot that is in the server sees every channel; otherwise only the invite's own channel is visible.
-      const joined = client.guilds?.cache.get(guildId);
-      const adChannels = joined
-        ? adChannelNames(joined.channels.cache.map((c) => c.name))
-        : [...new Set([...(existing?.adChannels ?? []), ...adChannelNames([invite.channel?.name ?? ''])])];
-      store.upsertServer(guildId, {
-        adChannels,
-        name: invite.guild.name,
-        description: invite.guild.description ?? '',
-        icon: invite.guild.iconURL?.({ size: 128 }) ?? null,
-        inviteCode: invite.guild.vanityURLCode || code,
-        members: invite.memberCount ?? existing?.members ?? 0,
-        online: invite.presenceCount ?? existing?.online ?? 0,
-        alive: true,
-        firstSeen: existing?.firstSeen ?? now,
-        lastChecked: now,
-      });
+      return null;
     }
-    if (!guildId) return; // invite known to be invalid
-
-    const server = store.server(guildId);
-    if (!server) return;
-    const updates = {};
-    const ads = sightings.filter((s) => s.ad !== false);
-    const fromRoblox = sightings.find((s) => s.groupText);
-    if (fromRoblox) updates.groupText = fromRoblox.groupText; // the Roblox group that links to this server
-    if (ads.length) {
-      const latest = ads[ads.length - 1];
-      const sources = [...(server.sources ?? [])];
-      for (const { source } of ads) {
-        if (!sources.some((s) => s.channelId === source.channelId)) sources.push(source);
-      }
-      Object.assign(updates, {
-        adText: latest.adText,
-        adSightings: (server.adSightings ?? 0) + ads.length,
-        lastAdAt: latest.at,
-        sources: sources.slice(-MAX_SOURCES),
-      });
+    if (!invite.guild) {
+      store.setInvite(code, null); // group DM invite
+      return null;
     }
-    store.upsertServer(guildId, { ...updates, ...reclassify({ ...server, ...updates }) });
+    store.setInvite(code, invite.guild.id);
+    const existing = store.server(invite.guild.id);
+    return store.upsertServer(invite.guild.id, {
+      name: invite.guild.name,
+      inviteCode: invite.guild.vanityURLCode || code,
+      members: invite.memberCount ?? existing?.members ?? 0,
+      online: invite.presenceCount ?? existing?.online ?? 0,
+      sources: [...new Set([...(existing?.sources ?? []), ...(source ? [source] : [])])],
+      alive: true,
+      firstSeen: existing?.firstSeen ?? now,
+      lastChecked: now,
+    });
   }
 
   async function work() {
     if (working || !queue.size) return;
     working = true;
-    const [code, sightings] = queue.entries().next().value;
+    const [code, { source }] = queue.entries().next().value;
     queue.delete(code);
     try {
-      await resolve(code, sightings);
+      await resolve(code, source);
     } catch (err) {
       console.error(`Finder: could not look up invite ${code}:`, err.message ?? err);
     } finally {
@@ -244,221 +122,158 @@ function createFinder({ client, dataPath, allowedUserIds = [], robloxCookie, you
     }
   }
 
+  /** Queue an invite unless it was checked recently. */
+  function enqueue(code, source) {
+    const cached = store.invite(code);
+    if (cached && Date.now() - cached.checkedAt < RECHECK_AFTER_MS) {
+      const server = cached.guildId && store.server(cached.guildId);
+      if (server && source && !server.sources?.includes(source)) {
+        store.upsertServer(server.guildId, { sources: [...(server.sources ?? []), source] });
+      }
+      return;
+    }
+    if (!queue.has(code)) queue.set(code, { source });
+  }
+
+  /** Read every listing site and queue the invites it lists. */
+  function readSources() {
+    if (reading) return reading;
+    reading = (async () => {
+      for (const source of sources) {
+        try {
+          const listed = await source.fetch({ fetchImpl });
+          let invites = 0;
+          for (const entry of listed) {
+            // Sites' member counts can be stale, so they only skip clearly small servers; Discord's count decides.
+            if (entry.members != null && entry.members < MIN_MEMBERS / 2) continue;
+            for (const code of extractInviteCodes(entry.invite)) {
+              invites++;
+              enqueue(code, source.name);
+            }
+          }
+          store.setSourceReport(source.name, { listed: listed.length, invites });
+          console.log(`Finder: ${source.name} listed ${listed.length} servers, ${invites} invites queued`);
+        } catch (err) {
+          store.setSourceReport(source.name, { error: err.message });
+          console.error(`Finder: reading ${source.name} failed:`, err);
+        }
+      }
+      store.data.lastSourcesAt = Date.now();
+      store.save();
+    })().finally(() => {
+      reading = null;
+    });
+    return reading;
+  }
+
+  function readSourcesIfDue() {
+    if (Date.now() - (store.data.lastSourcesAt ?? 0) > SOURCES_EVERY_MS) readSources();
+  }
+
   function recheckStale() {
     const cutoff = Date.now() - RECHECK_AFTER_MS;
     for (const server of store.servers) {
-      if (server.alive !== false && server.inviteCode && (server.lastChecked ?? 0) < cutoff) enqueue(server.inviteCode, null);
+      if (server.alive !== false && (server.lastChecked ?? 0) < cutoff) enqueue(server.inviteCode, null);
     }
-  }
-
-  // Auto-watched channels are scanned one at a time so a big server doesn't flood Discord.
-  let scanChain = Promise.resolve();
-
-  /** Watch (and read the history of) every ad / partner channel in a server the bot is in. */
-  function autoWatch(guild) {
-    for (const channel of guild.channels.cache.values()) {
-      if (![ChannelType.GuildText, ChannelType.GuildAnnouncement].includes(channel.type)) continue;
-      if (!isAdChannelName(channel.name) || store.isIgnored(channel.id)) continue;
-      if (!store.isWatched(channel.id)) store.watch(channel.id, guild.id);
-      if (store.isScanned(channel.id)) continue;
-      scanChain = scanChain.then(async () => {
-        try {
-          const { read, found } = await scan(channel, AUTO_SCAN);
-          store.markScanned(channel.id);
-          console.log(`Finder: auto-scanned #${channel.name} in ${guild.name}: ${read} messages, ${found} invites`);
-        } catch (err) {
-          console.warn(`Finder: can't read #${channel.name} in ${guild.name}: ${err.message}`);
-        }
-      });
-    }
-  }
-
-  let discovery = null;
-
-  /** Search Roblox for ER:LC groups and queue every Discord invite they link to. */
-  function runDiscovery() {
-    if (discovery) return discovery;
-    console.log('Finder: searching Roblox for ER:LC servers');
-    const onInvite = (code, groupText) => enqueue(code, { groupText, ad: false, source: { type: 'roblox' }, at: Date.now() });
-    discovery = discover({ onInvite, cookie: robloxCookie, youtubeKey, fetchImpl })
-      .then((report) => {
-        // No invites came back (Roblox down or blocking us): try again in 15 minutes instead of 6 hours.
-        store.data.lastDiscoveryAt = report.invites ? Date.now() : Date.now() - DISCOVER_EVERY_MS + 15 * 60 * 1000;
-        store.data.lastDiscovery = { ...report, at: Date.now() };
-        store.data.discoveryVersion = DISCOVERY_VERSION;
-        store.save();
-        console.log('Finder: Roblox search done', JSON.stringify(report));
-      })
-      .catch((err) => {
-        store.data.lastDiscovery = { error: err.message, at: Date.now() };
-        console.error('Finder: Roblox search failed:', err);
-      })
-      .finally(() => {
-        discovery = null;
-      });
-    return discovery;
-  }
-
-  function discoverIfDue() {
-    const stale = Date.now() - (store.data.lastDiscoveryAt ?? 0) > DISCOVER_EVERY_MS;
-    if (stale || store.data.discoveryVersion !== DISCOVERY_VERSION) runDiscovery();
-  }
-
-  /** What the last Roblox search found, step by step. */
-  function robloxStatus() {
-    const r = store.data.lastDiscovery;
-    const account = robloxCookie ? 'logged in with ROBLOX_COOKIE' : 'not logged in (no ROBLOX_COOKIE)';
-    if (discovery) return `**Roblox search:** running now, ${account}`;
-    if (!r) return '**Roblox search:** has not run yet';
-    const when = `<t:${Math.floor(r.at / 1000)}:R>`;
-    if (r.error) return `**Roblox search** ${when}: failed — \`${r.error}\``;
-    return (
-      `**Roblox search** ${when}, ${account}:\n` +
-      `- Groups checked: **${fmt(r.groups)}**, **${fmt(r.allies)}** of them found through allies` +
-      `${r.searchErrors ? ` (${fmt(r.searchErrors)} searches failed: \`${r.searchError}\`)` : ''}\n` +
-      `- Discord links read: **${fmt(r.linksOk)}** groups ok, **${fmt(r.linksFailed)}** failed${r.linkError ? ` (\`${r.linkError}\`)` : ''}\n` +
-      `- Discord invites found: **${fmt(r.invites)}**\n` +
-      (r.youtube
-        ? `**YouTube:** ${fmt(r.youtube.videos)} videos read, ${fmt(r.youtube.invites)} invites${r.youtube.error ? ` (\`${r.youtube.error}\`)` : ''}`
-        : `**YouTube:** ${youtubeKey ? 'waiting for the next run' : 'off (no YOUTUBE_API_KEY)'}`)
-    );
   }
 
   function start() {
-    discoverIfDue();
-    setInterval(discoverIfDue, RECHECK_SWEEP_MS).unref();
-    for (const guild of client.guilds.cache.values()) autoWatch(guild);
-    client.on('guildCreate', autoWatch);
-    client.on('channelCreate', (channel) => channel.guild && autoWatch(channel.guild));
-    setInterval(work, RESOLVE_INTERVAL_MS).unref();
-    setInterval(recheckStale, RECHECK_SWEEP_MS).unref();
-    // Re-score stored servers so rule changes (like the sells-ads check) apply without waiting for a re-check.
-    for (const server of store.servers) store.upsertServer(server.guildId, reclassify(server));
+    readSourcesIfDue();
     recheckStale();
-    console.log(`Finder: ${store.servers.length} servers stored, watching ${Object.keys(store.data.watched).length} channels`);
+    setInterval(work, RESOLVE_INTERVAL_MS).unref();
+    setInterval(() => {
+      readSourcesIfDue();
+      recheckStale();
+    }, 60 * 60 * 1000).unref();
+    console.log(`Finder: ${store.servers.length} servers stored, ${sources.length} listing sites`);
   }
 
-  /** Feed every message in a watched ad channel (including bot / webhook posts) to the finder. */
-  function handleMessage(message) {
-    if (!message.guildId || !store.isWatched(message.channelId)) return;
-    intake(messageText(message), { guildId: message.guildId, channelId: message.channelId, messageId: message.id });
-  }
+  // ---- rendering ----------------------------------------------------------------------
 
-  // ---- lookup / rendering -------------------------------------------------------------
-
-  function findServer(input) {
-    const raw = input.trim();
-    const code = extractInviteCodes(raw)[0] ?? raw;
-    const viaInvite = store.invite(code)?.guildId;
-    if (viaInvite && store.server(viaInvite)) return store.server(viaInvite);
-    if (store.server(raw)) return store.server(raw);
-    const needle = raw.toLowerCase();
-    return store.servers.find((s) => s.name?.toLowerCase() === needle) ?? store.servers.find((s) => s.name?.toLowerCase().includes(needle));
-  }
-
-  /** You can buy an ad there: it has an ad channel (community, advertisements, paid ads...) or offers paid ads. */
-  const sellsAds = (s) => s.sellsAds || s.adChannels?.length > 0;
-
-  /** ER:LC servers with a live invite; ones you can buy an ad in come first. */
-  function search({ category, query, minMembers, sort }) {
-    const needle = query?.toLowerCase();
-    const sorters = {
-      members: (a, b) => (b.members ?? 0) - (a.members ?? 0),
-      recent: (a, b) => (b.lastAdAt ?? 0) - (a.lastAdAt ?? 0),
-      ads: (a, b) => (b.adSightings ?? 0) - (a.adSightings ?? 0),
-    };
+  /** Live servers with at least `minMembers` (and never under 300), biggest first. */
+  function search(minMembers) {
     return store.servers
-      .filter((s) => s.erlc && s.alive !== false)
-      .filter((s) => category === 'all' || s.category === category)
-      .filter((s) => !needle || s.name?.toLowerCase().includes(needle))
-      .filter((s) => (s.members ?? 0) >= (minMembers ?? 0))
-      .sort((a, b) => sellsAds(b) - sellsAds(a) || (sorters[sort] ?? sorters.members)(a, b));
+      .filter((s) => s.alive !== false && (s.members ?? 0) >= Math.max(MIN_MEMBERS, minMembers))
+      .sort((a, b) => b.members - a.members);
   }
 
-  /** Why /find came back empty, so it's clear whether the finder has no data or everything was filtered out. */
-  function emptyHelp(params) {
-    if (discovery || queue.size) {
-      return (
-        `Collecting ER:LC servers right now: **${fmt(store.servers.length)}** looked up, **${fmt(queue.size)}** waiting. ` +
-        'Run `/find` again in a few minutes.'
-      );
-    }
-    const filtered = params.category !== 'all' || params.query || params.minMembers;
-    return (
-      `No ER:LC servers found${filtered ? ' with those filters' : ''} yet ` +
-      `(${fmt(store.servers.length)} servers looked up). Run \`/finder stats\` to see what the last search found.`
-    );
-  }
-
-  function searchMessage(params, page) {
-    const results = search(params);
+  function findMessage(minMembers, page) {
+    const results = search(minMembers);
     const pages = Math.max(1, Math.ceil(results.length / PAGE_SIZE));
     page = Math.min(Math.max(0, page), pages - 1);
-    const label = params.category === 'all' ? 'All' : CATEGORY_LABELS[params.category];
-    const collecting = discovery || queue.size ? ' · still collecting more' : '';
-    const header = `# ER:LC ${label} Server Links\n-# ${fmt(results.length)} found · ${SORTS[params.sort] ?? SORTS.members} · page ${page + 1}/${pages}${collecting}`;
-    let body = results.length
-      ? results.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE).map((s) => `https://discord.gg/${s.inviteCode}`).join('\n')
-      : emptyHelp(params);
+    const collecting = reading || queue.size ? ' · still collecting more' : '';
+    const title = minMembers > MIN_MEMBERS ? `${tierOf(minMembers).label} Members` : `${MIN_MEMBERS}+ Members`;
+    const header = `# ER:LC Servers · ${title}\n-# ${fmt(results.length)} found · page ${page + 1}/${pages}${collecting}`;
+
+    let body;
+    if (results.length) {
+      // Results are sorted biggest first, so each tier is one run: print its heading where it starts.
+      const lines = [];
+      let tier;
+      for (const s of results.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE)) {
+        const t = tierOf(s.members);
+        if (t !== tier) lines.push(`${lines.length ? '\n' : ''}**${t.label} members**`);
+        tier = t;
+        lines.push(`https://discord.gg/${s.inviteCode}`);
+      }
+      body = lines.join('\n');
+    } else if (reading || queue.size) {
+      body = `Collecting servers right now: **${fmt(queue.size)}** invites waiting to be checked. Run \`/find\` again in a few minutes.`;
+    } else {
+      body = `No servers found yet. Run \`/finder stats\` to see what the listing sites returned.`;
+    }
     if (header.length + body.length > MAX_TEXT) body = `${body.slice(0, MAX_TEXT - header.length - 1)}…`;
 
-    const state = [params.category, params.sort ?? 'members', params.minMembers ?? 0, params.query ?? ''].join(':');
     const button = (label, target, disabled) => ({
       type: C.BUTTON,
       style: BUTTON_STYLE.SECONDARY,
       label,
-      custom_id: `${PAGE_PREFIX}:${target}:${state}`.slice(0, 100),
+      custom_id: `${PAGE_PREFIX}:${target}:${minMembers}`,
       disabled,
     });
-    const nav = pages > 1 ? [{ type: C.SEPARATOR }, { type: C.ACTION_ROW, components: [button(`Previous ${PAGE_SIZE}`, page - 1, page === 0), button(`Next ${PAGE_SIZE}`, page + 1, page >= pages - 1)] }] : [];
+    const nav =
+      pages > 1
+        ? [
+            { type: C.SEPARATOR },
+            {
+              type: C.ACTION_ROW,
+              components: [button(`Previous ${PAGE_SIZE}`, page - 1, page === 0), button(`Next ${PAGE_SIZE}`, page + 1, page >= pages - 1)],
+            },
+          ]
+        : [];
     return textMessage(`${header}\n\n${body}`, nav);
   }
 
-  function infoMessage(s) {
-    const ts = (ms) => (ms ? `<t:${Math.floor(ms / 1000)}:R>` : 'never');
-    const scores = s.scores ?? {};
-    const ad = s.adText ? `\n**Latest ad:**\n>>> ${escapeMarkdown(s.adText.slice(0, 600))}` : '';
-    return textMessage(
-      `# ${escapeMarkdown(s.name ?? 'Unknown')}\n` +
-        `${escapeMarkdown(s.description || 'No description.')}\n\n` +
-        `- **Category:** ${CATEGORY_LABELS[s.category]}${s.manualCategory ? ' (set by hand)' : ''}\n` +
-        `- **Members:** ${fmt(s.members)} (${fmt(s.online)} online)\n` +
-        `- **Invite:** https://discord.gg/${s.inviteCode}${s.alive === false ? ' (expired)' : ''}\n` +
-        `- **Sells ads:** ${sellsAds(s) ? 'yes' : 'not that we can see'}${s.sellsAds ? ' (mentions paid ads)' : ''}\n` +
-        `- **Ad channels:** ${s.adChannels?.length ? s.adChannels.map((n) => `#${escapeMarkdown(n)}`).join(', ') : 'none seen'}\n` +
-        `- **Takes partnerships:** ${s.acceptsAds ? 'yes' : 'not mentioned'}\n` +
-        `- **Its own ads:** ${s.adSightings ? `seen ${fmt(s.adSightings)} times, last ${ts(s.lastAdAt)}` : 'none seen'}\n` +
-        `- **Scores:** ER:LC ${scores.erlc ?? 0} · roleplay ${scores.roleplay ?? 0} · design ${scores.design ?? 0} · misc ${scores.misc ?? 0}\n` +
-        `- **First found:** ${ts(s.firstSeen)} · **Checked:** ${ts(s.lastChecked)}\n` +
-        `-# Server ID ${s.guildId}${ad}`,
+  function statsMessage() {
+    const live = store.servers.filter((s) => s.alive !== false);
+    const tierCounts = TIERS.map((t) => `- **${t.label}:** ${fmt(live.filter((s) => tierOf(s.members ?? 0) === t).length)}`).join('\n');
+    const sourceLines = sources
+      .map(({ name }) => {
+        const r = store.data.sources[name];
+        if (!r) return `- **${name}:** not read yet`;
+        const when = `<t:${Math.floor(r.at / 1000)}:R>`;
+        return r.error ? `- **${name}** ${when}: failed — \`${r.error}\`` : `- **${name}** ${when}: ${fmt(r.listed)} servers listed, ${fmt(r.invites)} invites`;
+      })
+      .join('\n');
+    return notice(
+      'Finder Stats',
+      `${tierCounts}\n` +
+        `- **Under ${MIN_MEMBERS} members (hidden):** ${fmt(live.filter((s) => !tierOf(s.members ?? 0)).length)}\n` +
+        `- **Expired invites:** ${fmt(store.servers.length - live.length)}\n` +
+        `- **Invites waiting to be checked:** ${fmt(queue.size)}${reading ? ' (reading the sites now)' : ''}\n\n` +
+        `**Listing sites**\n${sourceLines || '- none set up yet'}`,
     );
   }
 
   function csv() {
-    const cols = ['guildId', 'name', 'category', 'members', 'online', 'inviteCode', 'alive', 'sellsAds', 'adChannels', 'acceptsAds', 'adSightings', 'lastAdAt', 'firstSeen', 'description'];
+    const cols = ['guildId', 'name', 'members', 'online', 'inviteCode', 'sources', 'firstSeen'];
     const cell = (col, value) => {
       if (value == null) return '';
-      const str = ['lastAdAt', 'firstSeen'].includes(col) ? new Date(value).toISOString() : [].concat(value).join('; ');
+      const str = col === 'firstSeen' ? new Date(value).toISOString() : [].concat(value).join('; ');
       return /[",\n]/.test(str) ? `"${str.replace(/"/g, '""')}"` : str;
     };
-    const rows = store.servers.filter((s) => s.erlc).map((s) => cols.map((col) => cell(col, s[col])).join(','));
+    const rows = search(0).map((s) => cols.map((col) => cell(col, s[col])).join(','));
     return [cols.join(','), ...rows].join('\n');
-  }
-
-  async function scan(channel, limit) {
-    let before;
-    let read = 0;
-    let found = 0;
-    while (read < limit) {
-      const batch = await channel.messages.fetch({ limit: Math.min(100, limit - read), before });
-      if (!batch.size) break;
-      for (const message of batch.values()) {
-        found += intake(messageText(message), { guildId: channel.guildId, channelId: channel.id, messageId: message.id });
-      }
-      read += batch.size;
-      before = batch.lastKey();
-    }
-    return { read, found };
   }
 
   // ---- interactions ---------------------------------------------------------------------
@@ -466,8 +281,8 @@ function createFinder({ client, dataPath, allowedUserIds = [], robloxCookie, you
   /** Returns true when the interaction belonged to the finder. */
   async function handleInteraction(interaction) {
     if (interaction.isButton() && interaction.customId.startsWith(`${PAGE_PREFIX}:`)) {
-      const [, page, category, sort, minMembers, ...query] = interaction.customId.split(':');
-      await interaction.update(searchMessage({ category, sort, minMembers: Number(minMembers), query: query.join(':') || undefined }, Number(page)));
+      const [, page, minMembers] = interaction.customId.split(':');
+      await interaction.update(findMessage(Number(minMembers), Number(page)));
       return true;
     }
     if (!interaction.isChatInputCommand()) return false;
@@ -479,22 +294,13 @@ function createFinder({ client, dataPath, allowedUserIds = [], robloxCookie, you
     const opts = interaction.options;
 
     if (interaction.commandName === 'find') {
-      discoverIfDue();
-      const params = {
-        category: opts.getString('category') ?? 'all',
-        query: opts.getString('query') ?? undefined,
-        minMembers: opts.getInteger('min_members') ?? 0,
-        sort: opts.getString('sort') ?? 'members',
-      };
-      await interaction.reply(ephemeral(searchMessage(params, 0)));
+      readSourcesIfDue();
+      await interaction.reply(ephemeral(findMessage(opts.getInteger('size') ?? MIN_MEMBERS, 0)));
       return true;
     }
 
     const sub = opts.getSubcommand();
-    if (sub === 'info') {
-      const server = findServer(opts.getString('server', true));
-      await interaction.reply(server ? ephemeral(infoMessage(server)) : notice('Not Found', 'The finder has no server matching that.'));
-    } else if (sub === 'add') {
+    if (sub === 'add') {
       const raw = opts.getString('invite', true);
       const codes = extractInviteCodes(raw);
       if (!codes.length && /^[a-z0-9-]{2,32}$/i.test(raw.trim())) codes.push(raw.trim());
@@ -506,74 +312,30 @@ function createFinder({ client, dataPath, allowedUserIds = [], robloxCookie, you
       const lines = [];
       for (const code of codes.slice(0, MAX_ADD)) {
         queue.delete(code);
+        let server;
         try {
-          await resolve(code, [{ adText: '', source: { guildId: interaction.guildId, channelId: 'manual', userId: interaction.user.id }, at: Date.now() }]);
+          server = await resolve(code, 'added by hand');
         } catch (err) {
           console.error(`Finder: manual add of ${code} failed:`, err);
           lines.push(`\`${code}\` — couldn't look it up, try again later`);
           continue;
         }
-        const server = store.server(store.invite(code)?.guildId);
         if (!server) lines.push(`\`${code}\` — expired or invalid`);
-        else if (!server.erlc) lines.push(`https://discord.gg/${server.inviteCode} — not ER:LC related, skipped`);
-        else if (!sellsAds(server)) lines.push(`https://discord.gg/${server.inviteCode} — ER:LC, but no ad selling seen (hidden from /find)`);
-        else lines.push(`https://discord.gg/${server.inviteCode} — added (${CATEGORY_LABELS[server.category]})`);
+        else if (!tierOf(server.members)) lines.push(`https://discord.gg/${server.inviteCode} — only ${fmt(server.members)} members, hidden from /find`);
+        else lines.push(`https://discord.gg/${server.inviteCode} — added (${escapeMarkdown(server.name)}, ${fmt(server.members)} members)`);
       }
       const extra = codes.length > MAX_ADD ? `\n-# Only the first ${MAX_ADD} links were added.` : '';
       await interaction.editReply(textMessage(`### Added Servers\n${lines.join('\n')}${extra}`.slice(0, MAX_TEXT)));
-    } else if (['watch', 'unwatch', 'scan'].includes(sub)) {
-      const channel = opts.getChannel('channel', true);
-      if (sub === 'watch') {
-        store.watch(channel.id, interaction.guildId);
-        await interaction.reply(notice('Watching Channel', `Invites posted in <#${channel.id}> will be collected. Use \`/finder scan\` to pick up older ads too.`));
-      } else if (sub === 'unwatch') {
-        const had = store.unwatch(channel.id);
-        await interaction.reply(notice(had ? 'Stopped Watching' : 'Not Watched', `<#${channel.id}> ${had ? 'is no longer read' : 'was not being watched'}.`));
-      } else {
-        await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-        try {
-          const { read, found } = await scan(channel, opts.getInteger('limit') ?? 500);
-          const eta = Math.ceil((queue.size * RESOLVE_INTERVAL_MS) / 60_000);
-          await interaction.editReply(textMessage(`### Scan Done\nRead **${fmt(read)}** messages in <#${channel.id}> and queued **${fmt(found)}** invites. Lookups finish in about ${eta} min.`));
-        } catch (err) {
-          console.error('Finder: scan failed:', err);
-          await interaction.editReply(textMessage("### Something went wrong\nCouldn't read that channel. Check the bot has **View Channel** and **Read Message History** there."));
-        }
-      }
-    } else if (sub === 'category') {
-      const server = findServer(opts.getString('server', true));
-      if (!server) {
-        await interaction.reply(notice('Not Found', 'The finder has no server matching that.'));
-        return true;
-      }
-      const choice = opts.getString('category', true);
-      const manualCategory = choice === 'auto' ? undefined : choice;
-      const updated = store.upsertServer(server.guildId, { ...reclassify({ ...server, manualCategory }), manualCategory });
-      await interaction.reply(notice('Category Updated', `**${escapeMarkdown(updated.name)}** is now **${CATEGORY_LABELS[updated.category]}**.`));
     } else if (sub === 'export') {
       const file = new AttachmentBuilder(Buffer.from(csv()), { name: 'erlc-servers.csv' });
-      await interaction.reply({ content: 'Every ER:LC server found so far:', files: [file], flags: MessageFlags.Ephemeral });
+      await interaction.reply({ content: `Every server with ${MIN_MEMBERS}+ members found so far:`, files: [file], flags: MessageFlags.Ephemeral });
     } else if (sub === 'stats') {
-      const erlc = store.servers.filter((s) => s.erlc);
-      const count = (c) => fmt(erlc.filter((s) => s.category === c && s.alive !== false).length);
-      await interaction.reply(
-        notice(
-          'Finder Stats',
-          `- **Roleplay:** ${count('roleplay')}\n- **Design:** ${count('design')}\n- **Misc:** ${count('misc')}\n` +
-            `- **Expired invites:** ${fmt(erlc.filter((s) => s.alive === false).length)}\n` +
-            `- **Non ER:LC servers skipped:** ${fmt(store.servers.length - erlc.length)}\n` +
-            `- **Watched channels here:** ${store.watchedIn(interaction.guildId).map((id) => `<#${id}>`).join(', ') || 'none'}\n` +
-            `- **Invites waiting for lookup:** ${fmt(queue.size)}\n` +
-            `- **Invites looked up:** ${fmt(Object.keys(store.data.invites).length)} ` +
-            `(${fmt(Object.values(store.data.invites).filter((i) => !i.guildId).length)} invalid or expired)\n` +
-            robloxStatus(),
-        ),
-      );
+      await interaction.reply(statsMessage());
     }
     return true;
   }
 
-  return { commands: buildCommands(), start, handleMessage, handleInteraction };
+  return { commands: buildCommands(), start, handleInteraction };
 }
 
-module.exports = { createFinder };
+module.exports = { createFinder, extractInviteCodes, TIERS };

@@ -15,49 +15,19 @@ Pressing **Confirm** checks the Checkout Session with Stripe; only if Stripe rep
 `paid` does the card change to "Payment Confirmed". Otherwise the user gets a private notice.
 
 ## ER:LC Server Finder
-Finds ER:LC **roleplay**, **design** and **misc** servers that **sell ads**, so you can join them and buy one.
+Lists ER:LC Discord servers with **300+ members**, grouped by size: **300+**, **1,000+**, **5,000+** and **10,000+**.
 
-**How servers are found**
-0. **By itself, no setup** – every 6 hours (and on start) the bot searches Roblox's public group search for ER:LC
-   communities (`erlc`, `erlc roleplay`, `erlc designs`, `liberty county roleplay`...) and collects the Discord links
-   those groups list. Just run `/find`. Roblox hides those links from logged-out visitors, so set `ROBLOX_COOKIE` to the
-   `.ROBLOSECURITY` cookie of a spare Roblox account (never your main one).
-   It searches ~40 ER:LC terms and follows the allies of ER:LC groups. With `YOUTUBE_API_KEY` set it also reads the
-   Discord links in ER:LC YouTube video descriptions. Railway's logs show `Finder: Roblox search done, N groups, M Discord invites queued`.
-1. **Ad channels** – `/finder watch channel:#ads` makes the bot read every new message in an
-   advertisement / partnership channel, including ads posted by bots and webhooks in embeds. `/finder scan` reads
-   the channel's older messages too (up to 1,000). Add the bot to ER:LC ad / partnership servers and watch their ad
-   channels to grow the list.
-2. **Submissions** – `/finder add` takes one or more links at once (up to 25), e.g. `discord.gg/a discord.gg/b`.
-3. **Automatic** – in every server the bot is in, channels named like ads, advertisements, partners, partnerships,
-   self-promo or paid ads are watched by themselves and their last 500 messages are read once. `/finder unwatch` stops one for good.
-
-**What happens to each invite**
-- It is looked up through Discord's invite API (one every 2 seconds) for the server's name, description,
-  member and online counts. Expired invites are marked and hidden; every server is re-checked daily.
-- The name, description and ad text are scored for ER:LC words (`ERLC`, `ER:LC`, `Liberty County`, `Emergency Response`...)
-  and then for roleplay words (roleplay, SSU, sheriff, departments...), design words (designs, liveries, uniforms,
-  graphics, commissions, server setups...) or misc words (hub, community, ad server, news...). Fancy fonts like 𝐄𝐑𝐋𝐂 are understood.
-- A server is listed only when you can **buy an ad** there: it has a channel called **community**, **advertisements**,
-  **paid ads**, **buy ads** or **ad shop** (emoji and dividers like `📢・advertisements` or `┃paid-ads` are fine), or its
-  name, description or ads offer paid ads (paid ads, ad prices / packages, ping ads, sponsors, ads for Robux...).
-  Servers that only post their own ads or only take free partnerships are kept but not listed. Discord only shows a server's full channel list to bots in that server; for other servers the
-  finder sees just the channel each invite points to.
-  Servers with nothing tying them to ER:LC are kept (so they aren't looked up again) but never listed.
+Servers come from ER:LC listing sites (`src/finder/sources.js`), read every 6 hours. Every invite is checked
+through Discord's invite API, so member counts are Discord's own and expired invites are dropped. Servers are
+re-checked daily.
 
 **Commands** (only the users in `FINDER_USER_IDS` can use them; by default `1068719082700029952` and
 `737181735846019112`)
-- `/find [category] [query] [min_members] [sort]` – just the Discord links of ER:LC servers (ones selling ads first) (e.g. `https://discord.gg/pulsecustoms`), 15 at a time; **Next 15** / **Previous 15**
-  buttons page through the rest. Category defaults to All
-- `/finder info server:<invite, ID or name>` – details, scores and the latest ad
-- `/finder add invite:<links>` – submit up to 25 servers at once
-- `/finder watch|unwatch|scan channel:<channel>` – choose which channels are read
-- `/finder category server:<...> category:<...>` – fixes a wrong category (`Automatic` undoes it)
-- `/finder export` – CSV of every ER:LC server found
-- `/finder stats` – counts per category
-
-The bot only reads channels in servers it has been added to. It does not use self-bots or scrape listing sites,
-both of which break Discord's / those sites' terms.
+- `/find [size]` – just the Discord links, biggest first under size headings, 15 at a time with
+  **Next 15** / **Previous 15** buttons. `size` shows only servers of at least 1,000+, 5,000+ or 10,000+ members
+- `/finder add invite:<links>` – add up to 25 servers by hand
+- `/finder export` – CSV of every server found
+- `/finder stats` – servers per size group and what each listing site returned
 
 The list is saved to `FINDER_DATA_PATH` (default `data/finder.json`). On Railway add a **Volume** mounted at `/data`
 and set `FINDER_DATA_PATH=/data/finder.json`, otherwise the list is lost on every redeploy.
@@ -65,12 +35,12 @@ and set `FINDER_DATA_PATH=/data/finder.json`, otherwise the list is lost on ever
 ## Setup
 1. `npm install`
 2. Copy `.env.example` to `.env` and fill in `DISCORD_TOKEN` and `STRIPE_SECRET_KEY`.
-3. In the Discord Developer Portal, enable the **Message Content** intent (needed for `-usd` and for reading ad channels).
+3. In the Discord Developer Portal, enable the **Message Content** intent (needed for `-usd`).
 4. Invite the bot with the `bot` and `applications.commands` scopes.
 5. `npm start`
 
 ## Deploying on Railway
 Railway does not use a `.env` file. Set the variables on the service instead:
 1. Open the service -> **Variables** -> **New Variable**.
-2. Add `DISCORD_TOKEN`, `STRIPE_SECRET_KEY` and `OWNER_ID` (no quotes needed). Optionally `GUILD_ID` and `FINDER_DATA_PATH`.
+2. Add `DISCORD_TOKEN`, `STRIPE_SECRET_KEY` and `OWNER_ID` (no quotes needed). Optionally `GUILD_ID`, `FINDER_DATA_PATH` and `FINDER_USER_IDS`.
 3. Redeploy. The start command (`npm start`) is set in `railway.json`.

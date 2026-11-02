@@ -3,291 +3,107 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { adChannelNames, classify, extractInviteCodes, isAdChannelName } = require('../src/finder/classify');
-const { createFinder: realCreateFinder } = require('../src/finder');
-const { discoverFromRoblox } = require('../src/finder/roblox');
+const { createFinder, extractInviteCodes } = require('../src/finder');
 
-// Tests never reach Roblox; the discovery test below feeds it fake responses.
-const createFinder = (opts) => realCreateFinder({ discover: async () => ({ groups: 0, invites: 0 }), ...opts });
+const tempPath = () => path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'finder-')), 'finder.json');
 
-test('extracts invite codes from ads', () => {
-  const ad = 'Join us! discord.gg/LibertyRP and https://discord.com/invite/AbC-12 (again: discord.gg/LibertyRP)';
-  // Invite codes are case-sensitive: lowercasing "AbC-12" would turn it into a different, invalid invite.
-  assert.deepStrictEqual(extractInviteCodes(ad), ['LibertyRP', 'AbC-12']);
+/** Fake Discord: invite code "m<members>" is a server with that many members; "dead" doesn't exist. */
+const fakeClient = () => ({
+  async fetchInvite(code) {
+    if (!code.startsWith('m')) throw Object.assign(new Error('Unknown Invite'), { code: 10006 });
+    const members = Number(code.slice(1).split('x')[0]);
+    return { guild: { id: code, name: `Server ${code}`, vanityURLCode: null }, memberCount: members, presenceCount: 1 };
+  },
 });
 
-test('classifies ER:LC roleplay, design and misc servers', () => {
-  assert.strictEqual(classify('Florida State Roleplay', 'ER:LC roleplay with daily SSUs, sheriff and fire departments').category, 'roleplay');
-  assert.strictEqual(classify('Nova Designs', 'ERLC liveries, uniforms and server setups. Commissions open!').category, 'design');
-  assert.strictEqual(classify('ERLC Hub', 'The biggest ER;LC community hub. Partnerships open').category, 'misc');
-  assert.strictEqual(classify('𝐄𝐑𝐋𝐂 𝐑𝐨𝐥𝐞𝐩𝐥𝐚𝐲', 'Liberty County sessions').category, 'roleplay');
-  assert.strictEqual(classify('Minecraft SMP', 'Survival roleplay server').category, 'unrelated');
-});
-
-test('detects servers that take ads / partnerships', () => {
-  assert.ok(classify('x', 'ERLC RP, partnerships open').acceptsAds);
-  assert.ok(!classify('x', 'ERLC RP, daily sessions').acceptsAds);
-});
-
-test('detects servers that sell ads', () => {
-  for (const text of ['Paid ads open!', 'Buy an ad for 200 robux', 'Ad prices in #shop', '@everyone ping ads available', 'Sponsored posts', '100 R$ per ad']) {
-    assert.ok(classify('ERLC Hub', text).sellsAds, text);
-  }
-  for (const text of ['Partnerships open', 'ERLC RP with daily sessions', 'Read the ad rules']) {
-    assert.ok(!classify('ERLC Hub', text).sellsAds, text);
-  }
-});
-
-test('spots community / advertisements / paid ads channels', () => {
-  const names = ['general', '📢・advertisements', '┃paid-ads', 'community', 'community-chat', 'paid_advertisement', 'ads-rules', 'communityx', 'unpaid'];
-  assert.deepStrictEqual(adChannelNames(names), ['📢・advertisements', '┃paid-ads', 'community', 'community-chat', 'paid_advertisement']);
-});
-
-test('collects ads from watched channels and searches them', async () => {
-  const dataPath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'finder-')), 'finder.json');
-  const guilds = {
-    staterp: { id: '1', name: 'State Roleplay', description: 'ER:LC roleplay, daily SSU', members: 900 },
-    nova: { id: '2', name: 'Nova Designs', description: 'ERLC liveries and uniforms', members: 300 },
-    mc: { id: '3', name: 'Block SMP', description: 'Minecraft', members: 5000 },
-    hub: { id: '4', name: 'ERLC Central', description: 'ER:LC hub', members: 50, channel: '💸┃paid-ads' },
-    partner: { id: '5', name: 'Partner County RP', description: 'ER:LC roleplay', members: 700 },
-  };
-  const client = {
-    guilds: { cache: new Map() },
-    on() {},
-    async fetchInvite(code) {
-      const g = guilds[code];
-      if (!g) throw Object.assign(new Error('Unknown Invite'), { code: 10006 });
-      return { guild: { id: g.id, name: g.name, description: g.description, vanityURLCode: null, iconURL: () => null }, channel: { name: g.channel ?? 'welcome' }, memberCount: g.members, presenceCount: 10 };
-    },
-  };
-  const finder = createFinder({ client, dataPath });
-  assert.deepStrictEqual(finder.commands.map((c) => c.name), ['find', 'finder']);
-
-  const replies = [];
-  const interaction = (sub, values = {}, user = 'owner') => ({
-    isButton: () => false,
-    isChatInputCommand: () => true,
-    commandName: sub === 'search' ? 'find' : 'finder',
-    user: { id: user },
-    guildId: 'home',
-    memberPermissions: { has: () => false },
-    options: {
-      getSubcommand: () => sub,
-      getString: (n) => values[n] ?? null,
-      getInteger: (n) => values[n] ?? null,
-      getChannel: (n) => values[n],
-    },
-    reply: async (r) => replies.push(r),
-    deferReply: async () => {},
-    editReply: async (r) => replies.push(r),
-  });
-
-  await finder.handleInteraction(interaction('watch', { channel: { id: 'ads' } }));
-  for (const content of [
-    'ERLC RP - paid ads open, 500 robux per ad discord.gg/staterp',
-    'Best ERLC designs, buy an ad today discord.gg/nova',
-    'ERLC RP, partnerships open discord.gg/partner', // only advertises itself, sells nothing
-    'discord.gg/mc',
-    'discord.gg/dead',
-  ]) {
-    finder.handleMessage({ guildId: 'home', channelId: 'ads', id: content, content, embeds: [] });
-  }
-  finder.handleMessage({ guildId: 'home', channelId: 'other', id: 'x', content: 'discord.gg/ignored', embeds: [] });
-
-  // Let the 2s lookup timer work through the 5 queued invites.
-  finder.start();
-  await new Promise((r) => setTimeout(r, 2_000 * 5 + 500));
-
-  await finder.handleInteraction(interaction('search'));
-  const text = JSON.stringify(replies.at(-1));
-  assert.match(text, /discord\.gg\/staterp/);
-  assert.match(text, /discord\.gg\/nova/);
-  assert.doesNotMatch(text, /discord\.gg\/mc\b/);
-  // Servers that don't sell ads are still listed, after the ones you can buy an ad in.
-  assert.ok(text.indexOf('discord.gg/partner') > text.indexOf('discord.gg/staterp'));
-
-  // The invite points at a paid ads channel, so that channel is recorded.
-  await finder.handleInteraction(interaction('add', { invite: 'discord.gg/hub' }));
-  await finder.handleInteraction(interaction('info', { server: 'discord.gg/hub' }));
-  assert.match(JSON.stringify(replies.at(-1)), /Ad channels:\*\* #💸┃paid-ads/);
-
-  await finder.handleInteraction(interaction('search', { category: 'design' }));
-  assert.doesNotMatch(JSON.stringify(replies.at(-1)), /discord\.gg\/staterp/);
-
-  await finder.handleInteraction(interaction('category', { server: 'Nova Designs', category: 'misc' }));
-  await finder.handleInteraction(interaction('search', { category: 'misc' }));
-  assert.match(JSON.stringify(replies.at(-1)), /discord\.gg\/nova/);
-});
-
-test('/find shows 15 servers at a time with a Next 15 button', async () => {
-  const dataPath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'finder-')), 'finder.json');
-  const client = {
-    async fetchInvite(code) {
-      const n = Number(code.slice(1));
-      return { guild: { id: String(n), name: `ERLC Roleplay ${n}`, description: 'ER:LC roleplay, paid ads available', vanityURLCode: null, iconURL: () => null }, memberCount: 1000 - n };
-    },
-  };
-  const finder = createFinder({ client, dataPath });
+const command = (finder, name, { sub, values = {}, user = 'u' } = {}) => {
   let reply;
-  const base = { user: { id: 'u' }, guildId: 'home', isButton: () => false, isChatInputCommand: () => true };
-  for (let n = 1; n <= 20; n++) {
-    await finder.handleInteraction({
-      ...base,
-      commandName: 'finder',
-      options: { getSubcommand: () => 'add', getString: () => `discord.gg/s${n}` },
+  const done = async (r) => (reply = JSON.stringify(r));
+  return finder
+    .handleInteraction({
+      user: { id: user },
+      commandName: name,
+      isButton: () => false,
+      isChatInputCommand: () => true,
+      options: { getSubcommand: () => sub, getString: (n) => values[n] ?? null, getInteger: (n) => values[n] ?? null },
+      reply: done,
       deferReply: async () => {},
-      editReply: async () => {},
-    });
-  }
+      editReply: done,
+    })
+    .then(() => reply);
+};
 
-  await finder.handleInteraction({ ...base, commandName: 'find', options: { getString: () => null, getInteger: () => null }, reply: async (r) => (reply = r) });
+const add = (finder, codes) => command(finder, 'finder', { sub: 'add', values: { invite: codes.map((c) => `discord.gg/${c}`).join(' ') } });
+
+test('keeps invite codes case-sensitive', () => {
+  assert.deepStrictEqual(extractInviteCodes('discord.gg/AbC-12 https://discord.com/invite/XyZ discord.gg/AbC-12'), ['AbC-12', 'XyZ']);
+});
+
+test('/find lists 300+ servers biggest first under size headings', async () => {
+  const finder = createFinder({ client: fakeClient(), dataPath: tempPath(), sources: [] });
+  const reply = await add(finder, ['m12000', 'm6000', 'm1500', 'm450', 'm299', 'dead']);
+  assert.match(reply, /m299 — only 299 members, hidden/);
+  assert.match(reply, /dead` — expired or invalid/);
+
+  const text = await command(finder, 'find');
+  const order = ['10,000\\+ members', 'm12000', '5,000\\+ members', 'm6000', '1,000\\+ members', 'm1500', '300\\+ members', 'm450'];
+  let at = -1;
+  for (const part of order) {
+    const next = text.search(new RegExp(part));
+    assert.ok(next > at, `${part} should come after the previous item`);
+    at = next;
+  }
+  assert.doesNotMatch(text, /m299/);
+  assert.match(text, /4 found/);
+});
+
+test('/find size shows only servers at least that big', async () => {
+  const finder = createFinder({ client: fakeClient(), dataPath: tempPath(), sources: [] });
+  await add(finder, ['m12000', 'm6000', 'm1500', 'm450']);
+  const text = await command(finder, 'find', { values: { size: 5000 } });
+  assert.match(text, /5,000\+ Members/);
+  assert.match(text, /m12000/);
+  assert.match(text, /m6000/);
+  assert.doesNotMatch(text, /m1500|m450/);
+});
+
+test('/find pages 15 at a time', async () => {
+  const finder = createFinder({ client: fakeClient(), dataPath: tempPath(), sources: [] });
+  await add(finder, Array.from({ length: 20 }, (_, i) => `m${1000 + i}`));
+  let reply = JSON.parse(await command(finder, 'find'));
   let text = JSON.stringify(reply);
-  assert.match(text, /20 found/);
-  assert.match(text, /discord\.gg\/s15\b/);
-  assert.doesNotMatch(text, /discord\.gg\/s16\b/);
+  assert.match(text, /m1019/);
+  assert.doesNotMatch(text, /m1004\b/);
 
   const next = reply.components[0].components.at(-1).components[1];
   assert.strictEqual(next.label, 'Next 15');
-  await finder.handleInteraction({ isButton: () => true, customId: next.custom_id, update: async (r) => (reply = r) });
-  text = JSON.stringify(reply);
-  assert.match(text, /discord\.gg\/s16\b/);
-  assert.match(text, /discord\.gg\/s20\b/);
-  assert.doesNotMatch(text, /discord\.gg\/s15\b/);
+  await finder.handleInteraction({ isButton: () => true, customId: next.custom_id, update: async (r) => (text = JSON.stringify(r)) });
+  assert.match(text, /m1004\b/);
+  assert.match(text, /m1000\b/);
+  assert.doesNotMatch(text, /m1019/);
 });
 
-test('only allowed users can use the finder', async () => {
-  const dataPath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'finder-')), 'finder.json');
-  const finder = createFinder({ client: {}, dataPath, allowedUserIds: ['1068719082700029952', '737181735846019112'] });
-  const run = async (userId) => {
-    let reply;
-    await finder.handleInteraction({
-      user: { id: userId },
-      commandName: 'find',
-      isButton: () => false,
-      isChatInputCommand: () => true,
-      options: { getString: () => null, getInteger: () => null },
-      reply: async (r) => (reply = JSON.stringify(r)),
-    });
-    return reply;
-  };
-  assert.match(await run('123'), /Not Allowed/);
-  assert.match(await run('737181735846019112'), /ER:LC All Server Links/);
-  assert.match(await run('1068719082700029952'), /ER:LC All Server Links/);
-});
-
-test('recognises ad / partner channels to watch automatically', () => {
-  for (const name of ['📢・advertisements', '┃partners', 'partnerships', 'self-promo', 'server-ads', 'paid-ads', 'ads']) assert.ok(isAdChannelName(name), name);
-  for (const name of ['general', 'roads', 'admin-chat', 'downloads']) assert.ok(!isAdChannelName(name), name);
-});
-
-test('watches and reads ad channels in servers the bot is in', async () => {
-  const dataPath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'finder-')), 'finder.json');
-  const messages = new Map([['m1', { id: 'm1', content: 'ERLC Designs | paid ads open https://discord.gg/pulsecustoms', embeds: [] }]]);
-  messages.lastKey = () => 'm1';
-  const fetched = [];
-  const adChannel = {
-    id: 'c1', guildId: 'g1', name: '📢・advertisements', type: 0,
-    messages: { fetch: async ({ before }) => (fetched.push(before), before ? new Map() : messages) },
-  };
-  const general = { id: 'c2', guildId: 'g1', name: 'general', type: 0 };
-  const guild = { id: 'g1', name: 'Ad Hub', channels: { cache: new Map([['c1', adChannel], ['c2', general]]) } };
-  const client = {
-    guilds: { cache: new Map([['g1', guild]]) },
-    on() {},
-    async fetchInvite(code) {
-      return { guild: { id: '9', name: 'Pulse Customs', description: 'ER:LC liveries and designs', vanityURLCode: code, iconURL: () => null }, memberCount: 500 };
-    },
-  };
-  const finder = createFinder({ client, dataPath });
+test('reads listing sites and checks every invite on Discord', async () => {
+  const source = { name: 'Test Site', fetch: async () => [{ invite: 'https://discord.gg/m2500', members: 2400 }, { invite: 'discord.gg/m50', members: 50 }, { invite: 'discord.gg/dead' }] };
+  const finder = createFinder({ client: fakeClient(), dataPath: tempPath(), sources: [source] });
   finder.start();
   await new Promise((r) => setTimeout(r, 2_500));
 
-  let reply;
-  await finder.handleInteraction({
-    user: { id: 'u' }, commandName: 'find', isButton: () => false, isChatInputCommand: () => true,
-    options: { getString: () => null, getInteger: () => null }, reply: async (r) => (reply = JSON.stringify(r)),
-  });
-  assert.match(reply, /https:\/\/discord\.gg\/pulsecustoms/);
+  assert.match(await command(finder, 'find'), /m2500/);
+  const stats = await command(finder, 'finder', { sub: 'stats' });
+  assert.match(stats, /Test Site\*\* <t:\d+:R>: 3 servers listed, 2 invites/); // m50 is skipped as clearly too small
+  assert.match(stats, /1,000\+:\*\* 1/);
 });
 
-test('/finder add takes several links at once', async () => {
-  const dataPath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'finder-')), 'finder.json');
-  const guilds = {
-    pulsecustoms: { id: '1', name: 'Pulse Customs', description: 'ER:LC designs, paid ads open' },
-    staterp: { id: '2', name: 'State RP', description: 'ER:LC roleplay' },
-    mc: { id: '3', name: 'Block SMP', description: 'Minecraft' },
-  };
-  const client = {
-    async fetchInvite(code) {
-      const g = guilds[code];
-      if (!g) throw Object.assign(new Error('Unknown Invite'), { code: 10006 });
-      return { guild: { ...g, vanityURLCode: null, iconURL: () => null }, memberCount: 10 };
-    },
-  };
-  const finder = createFinder({ client, dataPath });
-  let reply;
-  await finder.handleInteraction({
-    user: { id: 'u' }, guildId: 'home', commandName: 'finder', isButton: () => false, isChatInputCommand: () => true,
-    options: { getSubcommand: () => 'add', getString: () => 'discord.gg/pulsecustoms discord.gg/staterp https://discord.gg/mc discord.gg/gone' },
-    deferReply: async () => {},
-    editReply: async (r) => (reply = JSON.stringify(r)),
-  });
-  assert.match(reply, /pulsecustoms — added \(Design\)/);
-  assert.match(reply, /staterp — ER:LC, but no ad selling seen/);
-  assert.match(reply, /mc — not ER:LC related/);
-  assert.match(reply, /gone` — expired or invalid/);
+test('wipes data saved by the old finder', async () => {
+  const dataPath = tempPath();
+  fs.writeFileSync(dataPath, JSON.stringify({ servers: { 1: { guildId: '1', inviteCode: 'old', members: 9000 } }, invites: {} }));
+  const finder = createFinder({ client: fakeClient(), dataPath, sources: [] });
+  assert.doesNotMatch(await command(finder, 'find'), /discord\.gg\/old/);
 });
 
-test('finds ER:LC Discord links from Roblox groups with no setup', async () => {
-  const responses = {
-    'groups/search': (url) =>
-      url.includes('keyword=erlc&')
-        ? { data: [{ id: 1, name: 'Pulse Customs', description: 'ERLC liveries' }, { id: 2, name: 'State RP', description: 'ER:LC RP discord.gg/staterp' }] }
-        : { data: [{ id: 1, name: 'Pulse Customs', description: 'ERLC liveries' }] },
-    'groups/1/social-links': () => ({ data: [{ type: 'Discord', url: 'https://discord.gg/pulsecustoms' }] }),
-    'groups/2/social-links': () => ({ data: [] }),
-    'groups/3/social-links': () => ({ data: [{ type: 'Discord', url: 'https://discord.gg/AllyRP' }] }),
-    'groups/1/relationships/allies': () => ({ relatedGroups: [{ id: 3, name: 'Ally County RP', description: 'ERLC roleplay' }, { id: 2, name: 'State RP' }] }),
-    'relationships/allies': () => ({ relatedGroups: [] }),
-  };
-  const cookies = [];
-  const fetchImpl = async (url, { headers }) => {
-    cookies.push(headers.cookie);
-    const key = Object.keys(responses).find((k) => url.includes(k));
-    return { ok: true, status: 200, json: async () => responses[key](url) };
-  };
-  const found = [];
-  const realSetTimeout = global.setTimeout;
-  global.setTimeout = (fn) => (fn(), 0); // skip the polite delays between requests
-  try {
-    const result = await discoverFromRoblox({ fetchImpl, cookie: 'abc', onInvite: (code, text) => found.push([code, text]) });
-    assert.deepStrictEqual(result, { groups: 3, allies: 1, invites: 3, searchErrors: 0, searchError: null, linksOk: 3, linksFailed: 0, linkError: null });
-  } finally {
-    global.setTimeout = realSetTimeout;
-  }
-  // AllyRP was only reachable through Pulse Customs' allies, and keeps its capital letters.
-  assert.deepStrictEqual(found.map(([code]) => code).sort(), ['AllyRP', 'pulsecustoms', 'staterp']);
-  assert.ok(cookies.every((c) => c === '.ROBLOSECURITY=abc'));
-  assert.match(found.find(([code]) => code === 'pulsecustoms')[1], /ERLC liveries/);
-});
-
-test('reads Discord links from ER:LC YouTube video descriptions', async () => {
-  const { discoverFromYouTube } = require('../src/finder/youtube');
-  const fetchImpl = async (url) => ({
-    ok: true,
-    json: async () =>
-      url.includes('/search?')
-        ? { items: [{ id: { videoId: 'v1' } }, { id: { videoId: 'v2' } }] }
-        : {
-            items: [
-              { snippet: { title: 'ERLC SSU', channelTitle: 'Coastal RP', description: 'Join: https://discord.gg/CoastalRP' } },
-              { snippet: { title: 'ERLC liveries', channelTitle: 'Pulse', description: 'no link here' } },
-            ],
-          },
-  });
-  const found = [];
-  const report = await discoverFromYouTube({ apiKey: 'k', fetchImpl, onInvite: (code) => found.push(code) });
-  assert.deepStrictEqual(found, ['CoastalRP']);
-  assert.strictEqual(report.videos, 2);
+test('only allowed users can use the finder', async () => {
+  const finder = createFinder({ client: fakeClient(), dataPath: tempPath(), sources: [], allowedUserIds: ['1068719082700029952'] });
+  assert.match(await command(finder, 'find', { user: '123' }), /Not Allowed/);
+  assert.match(await command(finder, 'find', { user: '1068719082700029952' }), /ER:LC Servers/);
 });

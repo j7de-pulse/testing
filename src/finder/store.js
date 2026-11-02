@@ -4,16 +4,22 @@
 const fs = require('node:fs');
 const path = require('node:path');
 
+// Bump to wipe stored data on the next start (the format or the sources changed).
+const VERSION = 2;
+
 class FinderStore {
   constructor(file) {
     this.file = file;
-    this.data = { servers: {}, invites: {}, watched: {}, ignored: {} };
+    this.data = { version: VERSION, servers: {}, invites: {}, sources: {} };
     this.saveTimer = null;
     try {
-      this.data = { ...this.data, ...JSON.parse(fs.readFileSync(file, 'utf8')) };
+      const saved = JSON.parse(fs.readFileSync(file, 'utf8'));
+      if (saved.version === VERSION) this.data = { ...this.data, ...saved };
+      else console.log('Finder: stored data is from the old finder, starting fresh');
     } catch (err) {
       if (err.code !== 'ENOENT') console.error(`Could not read ${file}, starting empty:`, err);
     }
+    this.save();
   }
 
   /** Save at most once a second; writes go to a temp file first so a crash can't corrupt the list. */
@@ -55,43 +61,10 @@ class FinderStore {
     this.save();
   }
 
-  isWatched(channelId) {
-    return Boolean(this.data.watched[channelId]);
-  }
-
-  watch(channelId, guildId) {
-    this.data.watched[channelId] = { ...this.data.watched[channelId], guildId, since: Date.now() };
-    delete this.data.ignored[channelId];
+  /** What the last run of a listing site returned, for /finder stats. */
+  setSourceReport(name, report) {
+    this.data.sources[name] = { ...report, at: Date.now() };
     this.save();
-  }
-
-  /** Unwatched channels are remembered so auto-watching doesn't pick them up again. */
-  unwatch(channelId) {
-    const had = this.isWatched(channelId);
-    delete this.data.watched[channelId];
-    this.data.ignored[channelId] = true;
-    this.save();
-    return had;
-  }
-
-  isIgnored(channelId) {
-    return Boolean(this.data.ignored[channelId]);
-  }
-
-  markScanned(channelId) {
-    if (!this.data.watched[channelId]) return;
-    this.data.watched[channelId].scanned = true;
-    this.save();
-  }
-
-  isScanned(channelId) {
-    return Boolean(this.data.watched[channelId]?.scanned);
-  }
-
-  watchedIn(guildId) {
-    return Object.entries(this.data.watched)
-      .filter(([, w]) => w.guildId === guildId)
-      .map(([channelId]) => channelId);
   }
 }
 
