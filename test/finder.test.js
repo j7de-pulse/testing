@@ -159,3 +159,13 @@ test('reads aderlc.xyz pages, member counts and invite redirects', async () => {
   ]);
   assert.ok(!requested.some((u) => u.includes('/discovery/12/invite')), 'a 40-member server is not followed');
 });
+
+test('/finder stats shows a site that is still being read', async () => {
+  let finish;
+  const slow = { name: 'Slow Site', run: ({ onServer }) => (onServer({ invite: 'discord.gg/m700' }), new Promise((r) => (finish = r))) };
+  const finder = createFinder({ client: fakeClient(), dataPath: tempPath(), sources: [slow] });
+  finder.start();
+  await new Promise((r) => setImmediate(r));
+  assert.match(await command(finder, 'finder', { sub: 'stats' }), /Slow Site:\*\* reading now, 1 invites found so far/);
+  finish({ listed: 1 });
+});

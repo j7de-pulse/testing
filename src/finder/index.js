@@ -135,7 +135,7 @@ function createFinder({ client, dataPath, allowedUserIds = [], sources = SOURCES
     if (!queue.has(code)) queue.set(code, { source });
   }
 
-  const live = {}; // source name -> invites queued so far by the run in progress
+  const inProgress = {}; // source name -> invites queued so far by the run in progress
 
   /** Read every listing site at the same time, queueing invites as they are found. */
   function readSources() {
@@ -144,25 +144,25 @@ function createFinder({ client, dataPath, allowedUserIds = [], sources = SOURCES
       // In parallel: a slow site (Melonly takes hours) must not hold up the others.
       await Promise.all(
         sources.map(async (source) => {
-          live[source.name] = 0;
+          inProgress[source.name] = 0;
           const onServer = ({ invite, members }) => {
             // Sites' member counts can be stale, so they only skip clearly small servers; Discord's count decides.
             if (members != null && members < MIN_MEMBERS / 2) return;
             for (const code of extractInviteCodes(invite)) {
-              live[source.name]++;
+              inProgress[source.name]++;
               enqueue(code, source.name);
             }
           };
           store.data.sourceState[source.name] ??= {};
           try {
             const { listed } = await source.run({ fetchImpl, onServer, state: store.data.sourceState[source.name], save: () => store.save() });
-            store.setSourceReport(source.name, { listed, invites: live[source.name] });
-            console.log(`Finder: ${source.name} listed ${listed} servers, ${live[source.name]} invites queued`);
+            store.setSourceReport(source.name, { listed, invites: inProgress[source.name] });
+            console.log(`Finder: ${source.name} listed ${listed} servers, ${inProgress[source.name]} invites queued`);
           } catch (err) {
-            store.setSourceReport(source.name, { error: err.message, invites: live[source.name] });
+            store.setSourceReport(source.name, { error: err.message, invites: inProgress[source.name] });
             console.error(`Finder: reading ${source.name} failed:`, err);
           }
-          delete live[source.name];
+          delete inProgress[source.name];
         }),
       );
       store.data.lastSourcesAt = Date.now();
@@ -257,7 +257,7 @@ function createFinder({ client, dataPath, allowedUserIds = [], sources = SOURCES
     const sourceLines = sources
       .map(({ name }) => {
         const r = store.data.sources[name];
-        if (name in live) return `- **${name}:** reading now, ${fmt(live[name])} invites found so far`;
+        if (name in inProgress) return `- **${name}:** reading now, ${fmt(inProgress[name])} invites found so far`;
         if (!r) return `- **${name}:** not read yet`;
         const when = `<t:${Math.floor(r.at / 1000)}:R>`;
         return r.error ? `- **${name}** ${when}: failed — \`${r.error}\`` : `- **${name}** ${when}: ${fmt(r.listed)} servers listed, ${fmt(r.invites)} invites`;
