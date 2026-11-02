@@ -137,31 +137,34 @@ function createFinder({ client, dataPath, allowedUserIds = [], sources = SOURCES
 
   const live = {}; // source name -> invites queued so far by the run in progress
 
-  /** Read every listing site, queueing invites as they are found. */
+  /** Read every listing site at the same time, queueing invites as they are found. */
   function readSources() {
     if (reading) return reading;
     reading = (async () => {
-      for (const source of sources) {
-        live[source.name] = 0;
-        const onServer = ({ invite, members }) => {
-          // Sites' member counts can be stale, so they only skip clearly small servers; Discord's count decides.
-          if (members != null && members < MIN_MEMBERS / 2) return;
-          for (const code of extractInviteCodes(invite)) {
-            live[source.name]++;
-            enqueue(code, source.name);
+      // In parallel: a slow site (Melonly takes hours) must not hold up the others.
+      await Promise.all(
+        sources.map(async (source) => {
+          live[source.name] = 0;
+          const onServer = ({ invite, members }) => {
+            // Sites' member counts can be stale, so they only skip clearly small servers; Discord's count decides.
+            if (members != null && members < MIN_MEMBERS / 2) return;
+            for (const code of extractInviteCodes(invite)) {
+              live[source.name]++;
+              enqueue(code, source.name);
+            }
+          };
+          store.data.sourceState[source.name] ??= {};
+          try {
+            const { listed } = await source.run({ fetchImpl, onServer, state: store.data.sourceState[source.name], save: () => store.save() });
+            store.setSourceReport(source.name, { listed, invites: live[source.name] });
+            console.log(`Finder: ${source.name} listed ${listed} servers, ${live[source.name]} invites queued`);
+          } catch (err) {
+            store.setSourceReport(source.name, { error: err.message, invites: live[source.name] });
+            console.error(`Finder: reading ${source.name} failed:`, err);
           }
-        };
-        store.data.sourceState[source.name] ??= {};
-        try {
-          const { listed } = await source.run({ fetchImpl, onServer, state: store.data.sourceState[source.name], save: () => store.save() });
-          store.setSourceReport(source.name, { listed, invites: live[source.name] });
-          console.log(`Finder: ${source.name} listed ${listed} servers, ${live[source.name]} invites queued`);
-        } catch (err) {
-          store.setSourceReport(source.name, { error: err.message, invites: live[source.name] });
-          console.error(`Finder: reading ${source.name} failed:`, err);
-        }
-        delete live[source.name];
-      }
+          delete live[source.name];
+        }),
+      );
       store.data.lastSourcesAt = Date.now();
       store.save();
     })().finally(() => {
